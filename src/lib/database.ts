@@ -1,8 +1,10 @@
-import Database from 'better-sqlite3';
 import path from 'path';
 import mysql from 'mysql2/promise';
 import { URL } from 'node:url';
 import dotenv from 'dotenv';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
 
 // Load environment variables
 dotenv.config({ path: '.env.local' });
@@ -17,6 +19,7 @@ let mysqlPool: any;
 
 if (isElectron) {
   // Use SQLite for Electron
+  const Database = require('better-sqlite3');
   const dbPath = path.join(process.cwd(), 'data', 'database.sqlite');
   sqliteDb = new Database(dbPath);
 
@@ -328,7 +331,68 @@ if (isElectron) {
     }
   };
 
-  createTables().catch(console.error);
+  const seedMySQLData = async () => {
+    try {
+      const [users]: any = await mysqlPool.execute('SELECT COUNT(*) as count FROM users');
+      if (users[0].count === 0) {
+        console.log('Seeding initial data for MySQL...');
+
+        // Seed Users
+        await mysqlPool.execute(`
+          INSERT INTO users (id, name, username, role, password, permissions) VALUES
+          ('admin-1', 'Administrator', 'admin', 'Admin', 'admin123', '{"dashboard": true, "members": true, "donations": true, "expenses": true, "events": true, "reports": true, "users": true, "settings": true}')
+        `);
+
+        // Seed Donation Categories
+        await mysqlPool.execute(`
+          INSERT INTO donation_categories (id, name) VALUES
+          ('tithe', 'Tithe'),
+          ('offering', 'Offering'),
+          ('special', 'Special Offering')
+        `);
+
+        // Seed Expense Categories
+        await mysqlPool.execute(`
+          INSERT INTO expense_categories (id, name) VALUES
+          ('utilities', 'Utilities'),
+          ('maintenance', 'Maintenance'),
+          ('supplies', 'Office Supplies'),
+          ('events', 'Events')
+        `);
+
+        // Seed Giving Types
+        await mysqlPool.execute(`
+          INSERT INTO giving_types (id, name) VALUES
+          ('cash', 'Cash'),
+          ('check', 'Check'),
+          ('online', 'Online'),
+          ('transfer', 'Bank Transfer')
+        `);
+
+        // Seed Networks
+        await mysqlPool.execute(`
+          INSERT INTO networks (id, name) VALUES
+          ('main', 'Main Campus'),
+          ('north', 'North District'),
+          ('south', 'South District')
+        `);
+
+        // Seed Resources
+        await mysqlPool.execute(`
+          INSERT INTO resources (id, name) VALUES
+          ('res1', 'Main Hall'),
+          ('res2', 'Community Room'),
+          ('res3', 'Chapel')
+        `);
+
+        console.log('MySQL seeding completed.');
+      }
+    } catch (error) {
+      console.error('Error seeding MySQL data:', error);
+    }
+  };
+
+  createTables().then(() => seedMySQLData()).catch(console.error);
 }
 
 // Export the appropriate database connection
