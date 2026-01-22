@@ -371,317 +371,175 @@ export default function ReportsPage() {
   }
 
   const handlePrint = () => {
-    // Create a print-specific layout with professional styling
+    // Create a strict data-only print layout
     const printContent = document.createElement('div');
     printContent.id = 'print-layout';
     printContent.style.cssText = `
-      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-      font-size: 11pt;
-      line-height: 1.6;
-      color: #333;
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 10pt;
+      color: #000;
       background: #fff;
-      padding: 0;
+      padding: 15px;
+      max-width: 100%;
       margin: 0;
-      position: fixed;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      z-index: 9999;
-      overflow: auto;
     `;
 
-    // Create main container with proper margins
-    const container = document.createElement('div');
-    container.style.cssText = `
-      max-width: 210mm;
-      margin: 0 auto;
-      padding: 20mm;
-      background: white;
+    // Add print styles to hide everything else
+    const style = document.createElement('style');
+    style.innerHTML = `
+      @media print {
+        body > *:not(#print-layout) {
+          display: none !important;
+        }
+        #print-layout {
+          display: block !important;
+        }
+      }
     `;
+    printContent.appendChild(style);
 
-    // Add professional header
+    // 1. HEADER: Context Only
     const header = document.createElement('div');
     header.style.cssText = `
-      border-bottom: 3px solid #2563eb;
+      margin-bottom: 20px;
+      border-bottom: 2px dashed #000;
       padding-bottom: 15px;
-      margin-bottom: 25px;
     `;
 
-    const orgName = document.createElement('div');
-    orgName.textContent = 'CLC FINANCES';
-    orgName.style.cssText = `
-      font-size: 28pt;
-      font-weight: 700;
-      color: #1e40af;
-      letter-spacing: 1px;
-      margin-bottom: 5px;
-    `;
-    header.appendChild(orgName);
+    const titleLine = document.createElement('div');
+    titleLine.innerHTML = `<strong>CLC FINANCES - FINANCIAL REPORT</strong>`;
+    titleLine.style.cssText = `font-size: 12pt; margin-bottom: 10px;`;
+    header.appendChild(titleLine);
 
-    const reportTitle = document.createElement('div');
-    reportTitle.textContent = 'Financial Report';
-    reportTitle.style.cssText = `
-      font-size: 16pt;
-      color: #64748b;
-      font-weight: 500;
-    `;
-    header.appendChild(reportTitle);
-
-    const startDateStr = dateRange?.from ? format(dateRange.from, 'MMMM dd, yyyy') : '';
-    const endDateStr = dateRange?.to ? format(dateRange.to, 'MMMM dd, yyyy') : '';
-    const dateInfo = document.createElement('div');
-    dateInfo.textContent = `Period: ${startDateStr} - ${endDateStr}`;
-    dateInfo.style.cssText = `
-      font-size: 10pt;
-      color: #64748b;
-      margin-top: 8px;
-    `;
-    header.appendChild(dateInfo);
-
-    container.appendChild(header);
-
-    // Executive Summary Box
-    const summaryBox = document.createElement('div');
-    summaryBox.style.cssText = `
-      background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%);
-      border-left: 4px solid #2563eb;
-      border-radius: 8px;
-      padding: 20px;
-      margin-bottom: 30px;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-    `;
-
-    const summaryTitle = document.createElement('h2');
-    summaryTitle.textContent = 'Executive Summary';
-    summaryTitle.style.cssText = `
-      font-size: 14pt;
-      font-weight: 600;
-      color: #1e40af;
-      margin: 0 0 15px 0;
-    `;
-    summaryBox.appendChild(summaryTitle);
-
-    const summaryGrid = document.createElement('div');
-    summaryGrid.style.cssText = `
+    // Filters context
+    const contextGrid = document.createElement('div');
+    contextGrid.style.cssText = `
       display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 15px;
+      grid-template-columns: auto 1fr;
+      gap: 5px 15px;
+      font-size: 9pt;
     `;
 
-    const summaryItems = [
-      { label: 'Total Members', value: totalMembers.toString(), icon: '👥' },
-      { label: 'Total Giving', value: `₱${totalDonations.toLocaleString()}`, icon: '💰' },
-      { label: 'Total Expenses', value: `₱${totalExpenses.toLocaleString()}`, icon: '📊' },
-      {
-        label: 'Net Position',
-        value: `₱${(totalDonations - totalExpenses).toLocaleString()}`,
-        icon: '📈',
-        color: totalDonations - totalExpenses >= 0 ? '#059669' : '#dc2626'
-      }
+    const startDateStr = dateRange?.from ? format(dateRange.from, 'MMMM dd, yyyy') : 'N/A';
+    const endDateStr = dateRange?.to ? format(dateRange.to, 'MMMM dd, yyyy') : 'N/A';
+
+    const contextItems = [
+      ['Report Period:', `${startDateStr} - ${endDateStr}`],
+      ['Selected Service:', selectedService === 'all' ? 'All Services' : selectedService],
+      ['Selected Network:', selectedNetwork === 'all' ? 'All Networks' : selectedNetwork],
+      ['Generated On:', new Date().toLocaleString()]
     ];
 
-    summaryItems.forEach(item => {
-      const itemDiv = document.createElement('div');
-      itemDiv.style.cssText = `
-        background: white;
-        padding: 12px;
-        border-radius: 6px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-      `;
-
+    contextItems.forEach(([label, value]) => {
       const labelDiv = document.createElement('div');
-      labelDiv.innerHTML = `<span style="margin-right: 6px;">${item.icon}</span>${item.label}`;
-      labelDiv.style.cssText = `
-        font-size: 9pt;
-        color: #64748b;
-        margin-bottom: 4px;
-      `;
-      itemDiv.appendChild(labelDiv);
+      labelDiv.textContent = label;
+      labelDiv.style.cssText = `font-weight: bold;`;
+      contextGrid.appendChild(labelDiv);
 
       const valueDiv = document.createElement('div');
-      valueDiv.textContent = item.value;
-      valueDiv.style.cssText = `
-        font-size: 16pt;
-        font-weight: 700;
-        color: ${item.color || '#1e293b'};
-      `;
-      itemDiv.appendChild(valueDiv);
-
-      summaryGrid.appendChild(itemDiv);
+      valueDiv.textContent = value;
+      contextGrid.appendChild(valueDiv);
     });
 
-    summaryBox.appendChild(summaryGrid);
-    container.appendChild(summaryBox);
+    header.appendChild(contextGrid);
+    printContent.appendChild(header);
 
-    // Helper function to create professional tables
-    function createProfessionalTable(title: string, headers: string[], data: any[], icon: string = '📋') {
+    // Helper for simple utilitarian charts
+    function createUtilitarianTable(title: string, headers: string[], data: any[], totalValue?: number) {
       const section = document.createElement('div');
-      section.style.cssText = `
-        margin-bottom: 30px;
-        page-break-inside: avoid;
-      `;
+      section.style.cssText = `margin-bottom: 30px; page-break-inside: avoid;`;
 
-      const sectionHeader = document.createElement('h3');
-      sectionHeader.innerHTML = `<span style="margin-right: 8px;">${icon}</span>${title}`;
-      sectionHeader.style.cssText = `
-        font-size: 13pt;
-        font-weight: 600;
-        color: #1e40af;
-        margin-bottom: 12px;
-        padding-bottom: 8px;
-        border-bottom: 2px solid #e2e8f0;
+      const titleDiv = document.createElement('div');
+      titleDiv.textContent = title.toUpperCase();
+      titleDiv.style.cssText = `
+        font-weight: bold;
+        border-bottom: 1px solid #000;
+        margin-bottom: 5px;
+        padding-bottom: 2px;
       `;
-      section.appendChild(sectionHeader);
+      section.appendChild(titleDiv);
 
       const table = document.createElement('table');
       table.style.cssText = `
         width: 100%;
         border-collapse: collapse;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-        border-radius: 8px;
-        overflow: hidden;
+        font-size: 9pt;
       `;
 
-      // Table header
-      const thead = document.createElement('thead');
-      const headerRow = document.createElement('tr');
-      headers.forEach((header, index) => {
+      // Header
+      const trHead = document.createElement('tr');
+      headers.forEach((h, i) => {
         const th = document.createElement('th');
-        th.textContent = header;
+        th.textContent = h;
         th.style.cssText = `
-          padding: 12px 16px;
-          background: linear-gradient(135deg, #1e40af 0%, #2563eb 100%);
-          color: white;
-          font-weight: 600;
-          text-align: ${index === headers.length - 1 ? 'right' : 'left'};
-          font-size: 10pt;
-          letter-spacing: 0.5px;
+          border-bottom: 1px solid #000;
+          text-align: ${i === headers.length - 1 ? 'right' : 'left'};
+          padding: 4px 2px;
         `;
-        headerRow.appendChild(th);
+        trHead.appendChild(th);
       });
-      thead.appendChild(headerRow);
-      table.appendChild(thead);
+      table.appendChild(trHead);
 
-      // Table body
-      const tbody = document.createElement('tbody');
-      data.forEach((item: any, rowIndex: number) => {
-        const row = document.createElement('tr');
-        row.style.cssText = `
-          background-color: ${rowIndex % 2 === 0 ? '#ffffff' : '#f8fafc'};
-          transition: background-color 0.2s;
-        `;
-
-        Object.values(item).forEach((value: any, colIndex: number) => {
+      // Body
+      data.forEach(row => {
+        const tr = document.createElement('tr');
+        Object.values(row).forEach((cell: any, i) => {
           const td = document.createElement('td');
-          td.textContent = value;
+          td.textContent = cell;
           td.style.cssText = `
-            padding: 10px 16px;
-            border-bottom: 1px solid #e2e8f0;
-            text-align: ${colIndex === Object.values(item).length - 1 ? 'right' : 'left'};
-            color: #334155;
-            font-size: 10pt;
+            border-bottom: 1px dotted #ccc;
+            text-align: ${i === Object.values(row).length - 1 ? 'right' : 'left'};
+            padding: 4px 2px;
           `;
-          row.appendChild(td);
+          tr.appendChild(td);
         });
-        tbody.appendChild(row);
+        table.appendChild(tr);
       });
 
-      // Add total row
-      if (title.includes('Network') || title.includes('Service')) {
-        const totalRow = document.createElement('tr');
-        const totalLabel = document.createElement('td');
-        totalLabel.textContent = 'TOTAL';
-        totalLabel.style.cssText = `
-          padding: 12px 16px;
-          font-weight: 700;
-          background-color: #f1f5f9;
-          border-top: 2px solid #cbd5e1;
-          color: #1e293b;
-          font-size: 10pt;
-        `;
-        totalRow.appendChild(totalLabel);
+      // Total if totalValue is provided (explicit numeric total)
+      if (totalValue !== undefined) {
+         const trTotal = document.createElement('tr');
+         const tdLabel = document.createElement('td');
+         tdLabel.textContent = 'TOTAL';
+         tdLabel.style.cssText = `padding: 4px 2px; font-weight: bold; border-top: 1px solid #000;`;
+         trTotal.appendChild(tdLabel);
 
-        const totalValue = document.createElement('td');
-        const total = data.reduce((sum: number, item: any) => sum + (item.amount || 0), 0);
-        totalValue.textContent = `₱${total.toLocaleString()}`;
-        totalValue.style.cssText = `
-          padding: 12px 16px;
-          font-weight: 700;
-          text-align: right;
-          background-color: #f1f5f9;
-          border-top: 2px solid #cbd5e1;
-          color: #1e40af;
-          font-size: 11pt;
-        `;
-        totalRow.appendChild(totalValue);
-        tbody.appendChild(totalRow);
+         const tdVal = document.createElement('td');
+         tdVal.textContent = `₱${totalValue.toLocaleString()}`;
+         tdVal.style.cssText = `padding: 4px 2px; font-weight: bold; text-align: right; border-top: 1px solid #000;`;
+         trTotal.appendChild(tdVal);
+         
+         table.appendChild(trTotal);
       }
 
-      table.appendChild(tbody);
       section.appendChild(table);
       return section;
     }
 
-    // Add selected sections
+    // 2. REPORT TOTALS TABLE (Instead of Executive Summary)
+    const summaryData = [
+      { metric: 'Total Members', value: totalMembers.toString() },
+      { metric: 'Total Giving', value: `₱${totalDonations.toLocaleString()}` },
+      { metric: 'Total Expenses', value: `₱${totalExpenses.toLocaleString()}` },
+      { metric: 'Net Position', value: `₱${(totalDonations - totalExpenses).toLocaleString()}` },
+    ];
+    printContent.appendChild(createUtilitarianTable('REPORT TOTALS', ['METRIC', 'VALUE'], summaryData));
+
+    // 3. DATA TABLES
     if (printSelection.network && donationsByNetwork.length > 0) {
-      const networkSection = createProfessionalTable(
-        'Giving by Network',
-        ['Network', 'Amount'],
-        donationsByNetwork,
-        '🌐'
-      );
-      container.appendChild(networkSection);
+      const total = donationsByNetwork.reduce((sum: number, d: any) => sum + (d.amount || 0), 0);
+      const data = donationsByNetwork.map((d: any) => ({ name: d.name, amount: `₱${d.amount.toLocaleString()}` }));
+      printContent.appendChild(createUtilitarianTable('GIVING BY NETWORK', ['NETWORK', 'AMOUNT'], data, total));
     }
 
     if (printSelection.service && donationsByServiceTime.length > 0) {
-      const serviceSection = createProfessionalTable(
-        'Giving by Service',
-        ['Service Time', 'Amount'],
-        donationsByServiceTime,
-        '⛪'
-      );
-      container.appendChild(serviceSection);
+       const total = donationsByServiceTime.reduce((sum: number, d: any) => sum + (d.amount || 0), 0);
+       const data = donationsByServiceTime.map((d: any) => ({ name: d.name, amount: `₱${d.amount.toLocaleString()}` }));
+       printContent.appendChild(createUtilitarianTable('GIVING BY SERVICE', ['SERVICE', 'AMOUNT'], data, total));
     }
-
-    // Footer
-    const footer = document.createElement('div');
-    footer.style.cssText = `
-      margin-top: 40px;
-      padding-top: 20px;
-      border-top: 2px solid #e2e8f0;
-      text-align: center;
-      color: #64748b;
-      font-size: 9pt;
-    `;
-
-    const timestamp = document.createElement('div');
-    timestamp.textContent = `Generated on ${new Date().toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    })}`;
-    timestamp.style.cssText = `margin-bottom: 8px;`;
-    footer.appendChild(timestamp);
-
-    const confidential = document.createElement('div');
-    confidential.textContent = 'Confidential - For Internal Use Only';
-    confidential.style.cssText = `
-      font-size: 8pt;
-      font-style: italic;
-      color: #94a3b8;
-    `;
-    footer.appendChild(confidential);
-
-    container.appendChild(footer);
-    printContent.appendChild(container);
 
     // Add to body and print
     document.body.appendChild(printContent);
-
-    // Print
     window.print();
 
     // Remove after printing
