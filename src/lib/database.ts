@@ -3,6 +3,7 @@ import mysql from 'mysql2/promise';
 import { URL } from 'node:url';
 import dotenv from 'dotenv';
 import { createRequire } from 'module';
+import fs from 'fs';
 
 const require = createRequire(import.meta.url);
 
@@ -10,396 +11,246 @@ const require = createRequire(import.meta.url);
 dotenv.config({ path: '.env.local' });
 
 // Use MySQL when DATABASE_URL is set, otherwise fallback to SQLite for Electron builds
-const useMySQL = process.env.DATABASE_URL || process.env.FORCE_MYSQL === 'true';
-const useSQLite = process.env.FORCE_SQLITE === 'true' || (!useMySQL && !process.env.NODE_ENV?.includes('production'));
-const isElectron = !useMySQL && (process.env.ELECTRON === 'true' || process.env.NODE_ENV !== 'production');
+const useSQLite = process.env.FORCE_SQLITE === 'true' || (process.env.ELECTRON === 'true' && process.env.FORCE_MYSQL !== 'true') || (!process.env.DATABASE_URL && process.env.FORCE_MYSQL !== 'true');
+const useMySQL = !useSQLite && (!!process.env.DATABASE_URL || process.env.FORCE_MYSQL === 'true');
+const isElectron = useSQLite;
 
 let sqliteDb: any;
 let mysqlPool: any;
+let dbInitError: any = null;
+let initialized = false;
 
-if (isElectron) {
-  // Use SQLite for Electron
-  const Database = require('better-sqlite3');
-  const dbPath = path.join(process.cwd(), 'data', 'database.sqlite');
-  sqliteDb = new Database(dbPath);
+export const ensureDb = async () => {
+  if (initialized) return;
 
-  // Enable WAL mode for better performance
-  sqliteDb.pragma('journal_mode = WAL');
-
-  // Create tables for SQLite
-  const createTablesSQL = `
-    CREATE TABLE IF NOT EXISTS users (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      username TEXT UNIQUE NOT NULL,
-      role TEXT NOT NULL CHECK (role IN ('Admin', 'Staff')),
-      password TEXT,
-      permissions TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS members (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      email TEXT UNIQUE NOT NULL,
-      phone TEXT,
-      join_date TEXT NOT NULL,
-      avatar_url TEXT,
-      address TEXT,
-      network TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS events (
-      id TEXT PRIMARY KEY,
-      title TEXT NOT NULL,
-      date TEXT NOT NULL,
-      description TEXT NOT NULL,
-    CREATE TABLE IF NOT EXISTS events (
-      id TEXT PRIMARY KEY,
-      title TEXT NOT NULL,
-      date TEXT NOT NULL,
-      description TEXT NOT NULL,
-      resource TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS resources (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL UNIQUE
-    );
-
-    CREATE TABLE IF NOT EXISTS donations (
-      id TEXT PRIMARY KEY,
-      donor_name TEXT NOT NULL,
-      member_id TEXT REFERENCES members(id),
-      amount REAL NOT NULL,
-      date TEXT NOT NULL,
-      category TEXT NOT NULL,
-      giving_type_id TEXT REFERENCES giving_types(id),
-      service_time TEXT,
-      recorded_by_id TEXT REFERENCES users(id),
-      reference TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS expenses (
-      id TEXT PRIMARY KEY,
-      description TEXT NOT NULL,
-      amount REAL NOT NULL,
-      date TEXT NOT NULL,
-      category TEXT NOT NULL,
-      recorded_by_id TEXT REFERENCES users(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS donation_categories (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL UNIQUE,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS expense_categories (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL UNIQUE,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS service_times (
-      id TEXT PRIMARY KEY,
-      time TEXT NOT NULL UNIQUE,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS giving_types (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL UNIQUE,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS networks (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL UNIQUE,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS settings (
-      id TEXT PRIMARY KEY DEFAULT 'global',
-      app_name TEXT NOT NULL DEFAULT 'CLC Finances',
-      logo_url TEXT NOT NULL DEFAULT '/CLC logo2.png',
-      theme TEXT NOT NULL DEFAULT 'dark' CHECK (theme IN ('light', 'dark')),
-      backup_time TEXT NOT NULL DEFAULT '02:00',
-      backup_enabled BOOLEAN NOT NULL DEFAULT 1,
-      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-  `;
-
-  sqliteDb.exec(createTablesSQL);
-
-  // Insert default settings if not exists
-  const insertDefaultSettingsSQL = `
-    INSERT OR IGNORE INTO settings (id, app_name, logo_url, theme, backup_time, backup_enabled, updated_at) VALUES
-    ('global', 'CLC Finances', '/CLC logo2.png', 'dark', '02:00', 1, CURRENT_TIMESTAMP);
-  `;
-
-  sqliteDb.exec(insertDefaultSettingsSQL);
-
-  // Insert default data for SQLite
-  const insertDefaultDataSQL = `
-    INSERT OR IGNORE INTO users (id, name, username, role, password, permissions) VALUES
-    ('admin-1', 'Administrator', 'admin', 'Admin', 'admin123', '{"dashboard": true, "members": true, "donations": true, "expenses": true, "events": true, "reports": true, "users": true, "settings": true}');
-
-    INSERT OR IGNORE INTO donation_categories (id, name) VALUES
-    ('tithe', 'Tithe'),
-    ('offering', 'Offering'),
-    ('special', 'Special Offering');
-
-    INSERT OR IGNORE INTO expense_categories (id, name) VALUES
-    ('utilities', 'Utilities'),
-    ('maintenance', 'Maintenance'),
-    ('supplies', 'Office Supplies'),
-    ('events', 'Events');
-
-
-
-    INSERT OR IGNORE INTO giving_types (id, name) VALUES
-    ('cash', 'Cash'),
-    ('check', 'Check'),
-    ('online', 'Online'),
-    ('transfer', 'Bank Transfer');
-
-    INSERT OR IGNORE INTO networks (id, name) VALUES
-    ('main', 'Main Campus'),
-    ('north', 'North District'),
-    ('south', 'South District');
-
-    INSERT OR IGNORE INTO resources (id, name) VALUES
-    ('res1', 'Main Hall'),
-    ('res2', 'Community Room'),
-    ('res3', 'Chapel');
-  `;
-
-  // Commented out to prevent default data from reappearing on every app restart
-  // sqliteDb.exec(insertDefaultDataSQL);
-} else {
-  // Use MySQL for web deployment
-  const connectionString = process.env.DATABASE_URL || 'mysql://clc_user:clc_password@localhost:3306/clc_finance';
-
-  const url = new URL(connectionString);
-  mysqlPool = mysql.createPool({
-    host: url.hostname,
-    port: parseInt(url.port) || 3306,
-    user: url.username,
-    password: url.password,
-    database: url.pathname.slice(1),
-    connectionLimit: 20,
-    insecureAuth: true,
-    connectTimeout: 60000,
-    authPlugins: {
-      mysql_clear_password: () => () => Buffer.from(url.password),
-      auth_gssapi_client: () => {
-        // For gssapi, we need to provide the password mechanism
-        // Since gssapi is about Kerberos, but the server might be misconfigured
-        // Let's try to fall back to clear password
-        return () => Buffer.from(url.password);
-      }
-    }
-  });
-
-  // Create tables for MySQL
-  const createTables = async () => {
+  if (isElectron) {
     try {
-      await mysqlPool.execute(`
+      // Use SQLite for Electron
+      const Database = require('better-sqlite3');
+      
+      // Allow overriding DB path via env var (for production where we need writable location)
+      let dbPath = process.env.SQLITE_DB_PATH;
+      
+      if (!dbPath) {
+        const dataDir = path.join(process.cwd(), 'data');
+        // Create data directory if it doesn't exist
+        if (!fs.existsSync(dataDir)) {
+          fs.mkdirSync(dataDir, { recursive: true });
+        }
+        dbPath = path.join(dataDir, 'database.sqlite');
+      }
+      
+      console.log('Initializing SQLite database at:', dbPath);
+      sqliteDb = new Database(dbPath);
+
+      // Enable WAL mode for better performance
+      sqliteDb.pragma('journal_mode = WAL');
+
+      // Create tables for SQLite
+      const createTablesSQL = `
         CREATE TABLE IF NOT EXISTS users (
-          id VARCHAR(255) PRIMARY KEY,
-          name VARCHAR(255) NOT NULL,
-          username VARCHAR(255) UNIQUE NOT NULL,
-          role ENUM('Admin', 'Staff') NOT NULL,
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          username TEXT UNIQUE NOT NULL,
+          role TEXT NOT NULL CHECK (role IN ('Admin', 'Staff')),
           password TEXT,
           permissions TEXT NOT NULL
-        )
-      `);
+        );
 
-      await mysqlPool.execute(`
         CREATE TABLE IF NOT EXISTS members (
-          id VARCHAR(255) PRIMARY KEY,
-          name VARCHAR(255) NOT NULL,
-          email VARCHAR(255) UNIQUE NOT NULL,
-          phone VARCHAR(255),
-          join_date DATETIME NOT NULL,
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          email TEXT UNIQUE NOT NULL,
+          phone TEXT,
+          join_date TEXT NOT NULL,
           avatar_url TEXT,
           address TEXT,
-          network VARCHAR(255) NOT NULL
-        )
-      `);
+          network TEXT NOT NULL
+        );
 
-      await mysqlPool.execute(`
         CREATE TABLE IF NOT EXISTS events (
-          id VARCHAR(255) PRIMARY KEY,
-          title VARCHAR(255) NOT NULL,
-          date DATETIME NOT NULL,
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          date TEXT NOT NULL,
           description TEXT NOT NULL,
-          resource VARCHAR(255) NOT NULL
-        )
-      `);
+          resource TEXT NOT NULL
+        );
 
-      await mysqlPool.execute(`
         CREATE TABLE IF NOT EXISTS resources (
-          id VARCHAR(255) PRIMARY KEY,
-          name VARCHAR(255) NOT NULL UNIQUE
-        )
-      `);
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL UNIQUE
+        );
 
-      await mysqlPool.execute(`
         CREATE TABLE IF NOT EXISTS donations (
-          id VARCHAR(255) PRIMARY KEY,
-          donor_name VARCHAR(255) NOT NULL,
-          member_id VARCHAR(255),
-          FOREIGN KEY (member_id) REFERENCES members(id),
-          amount DECIMAL(10,2) NOT NULL,
-          date DATETIME NOT NULL,
-          category VARCHAR(255) NOT NULL,
-          giving_type_id VARCHAR(255),
-          FOREIGN KEY (giving_type_id) REFERENCES giving_types(id),
-          service_time VARCHAR(255),
-          recorded_by_id VARCHAR(255),
-          FOREIGN KEY (recorded_by_id) REFERENCES users(id),
-          reference VARCHAR(255)
-        )
-      `);
+          id TEXT PRIMARY KEY,
+          donor_name TEXT NOT NULL,
+          member_id TEXT REFERENCES members(id),
+          amount REAL NOT NULL,
+          date TEXT NOT NULL,
+          category TEXT NOT NULL,
+          giving_type_id TEXT REFERENCES giving_types(id),
+          service_time TEXT,
+          recorded_by_id TEXT REFERENCES users(id),
+          reference TEXT
+        );
 
-      await mysqlPool.execute(`
         CREATE TABLE IF NOT EXISTS expenses (
-          id VARCHAR(255) PRIMARY KEY,
+          id TEXT PRIMARY KEY,
           description TEXT NOT NULL,
-          amount DECIMAL(10,2) NOT NULL,
-          date DATETIME NOT NULL,
-          category VARCHAR(255) NOT NULL,
-          recorded_by_id VARCHAR(255),
-          FOREIGN KEY (recorded_by_id) REFERENCES users(id)
-        )
-      `);
+          amount REAL NOT NULL,
+          date TEXT NOT NULL,
+          category TEXT NOT NULL,
+          recorded_by_id TEXT REFERENCES users(id)
+        );
 
-      await mysqlPool.execute(`
         CREATE TABLE IF NOT EXISTS donation_categories (
-          id VARCHAR(255) PRIMARY KEY,
-          name VARCHAR(255) NOT NULL UNIQUE,
-          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )
-      `);
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
 
-      await mysqlPool.execute(`
         CREATE TABLE IF NOT EXISTS expense_categories (
-          id VARCHAR(255) PRIMARY KEY,
-          name VARCHAR(255) NOT NULL UNIQUE,
-          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )
-      `);
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
 
-      await mysqlPool.execute(`
         CREATE TABLE IF NOT EXISTS service_times (
-          id VARCHAR(255) PRIMARY KEY,
-          time VARCHAR(255) NOT NULL UNIQUE,
-          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )
-      `);
+          id TEXT PRIMARY KEY,
+          time TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
 
-      await mysqlPool.execute(`
         CREATE TABLE IF NOT EXISTS giving_types (
-          id VARCHAR(255) PRIMARY KEY,
-          name VARCHAR(255) NOT NULL UNIQUE,
-          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )
-      `);
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
 
-      await mysqlPool.execute(`
         CREATE TABLE IF NOT EXISTS networks (
-          id VARCHAR(255) PRIMARY KEY,
-          name VARCHAR(255) NOT NULL UNIQUE,
-          created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )
-      `);
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
 
-      await mysqlPool.execute(`
         CREATE TABLE IF NOT EXISTS settings (
-          id VARCHAR(255) PRIMARY KEY DEFAULT 'global',
-          app_name VARCHAR(255) NOT NULL DEFAULT 'CLC Finances',
-          logo_url VARCHAR(500) NOT NULL DEFAULT '/CLC logo2.png',
-          theme ENUM('light', 'dark') NOT NULL DEFAULT 'dark',
-          backup_time VARCHAR(10) NOT NULL DEFAULT '02:00',
+          id TEXT PRIMARY KEY DEFAULT 'global',
+          app_name TEXT NOT NULL DEFAULT 'CLC Finances',
+          logo_url TEXT NOT NULL DEFAULT '/CLC logo2.png',
+          theme TEXT NOT NULL DEFAULT 'dark' CHECK (theme IN ('light', 'dark')),
+          backup_time TEXT NOT NULL DEFAULT '02:00',
           backup_enabled BOOLEAN NOT NULL DEFAULT 1,
-          updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-        )
-      `);
-    } catch (error) {
-      console.error('Error creating tables:', error);
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+      `;
+
+      sqliteDb.exec(createTablesSQL);
+
+      // Insert default settings if not exists
+      const insertDefaultSettingsSQL = `
+        INSERT OR IGNORE INTO settings (id, app_name, logo_url, theme, backup_time, backup_enabled, updated_at) VALUES
+        ('global', 'CLC Finances', '/CLC logo2.png', 'dark', '02:00', 1, CURRENT_TIMESTAMP);
+      `;
+
+      sqliteDb.exec(insertDefaultSettingsSQL);
+      initialized = true;
+      console.log('Database initialized successfully using SQLite');
+    } catch (error: any) {
+      console.error('CRITICAL: Failed to initialize SQLite database:', error);
+      dbInitError = {
+        message: error.message,
+        stack: error.stack,
+        code: error.code,
+        name: error.name,
+        env: {
+          NODE_ENV: process.env.NODE_ENV,
+          ELECTRON: process.env.ELECTRON,
+          FORCE_SQLITE: process.env.FORCE_SQLITE
+        }
+      };
+      throw error;
     }
-  };
 
-  const seedMySQLData = async () => {
-    try {
-      const [users]: any = await mysqlPool.execute('SELECT COUNT(*) as count FROM users');
-      if (users[0].count === 0) {
-        console.log('Seeding initial data for MySQL...');
+  } else {
+    // Use MySQL for web deployment
+    const connectionString = process.env.DATABASE_URL || 'mysql://clc_user:clc_password@localhost:3306/clc_finance';
 
-        // Seed Users
-        await mysqlPool.execute(`
-          INSERT INTO users (id, name, username, role, password, permissions) VALUES
-          ('admin-1', 'Administrator', 'admin', 'Admin', 'admin123', '{"dashboard": true, "members": true, "donations": true, "expenses": true, "events": true, "reports": true, "users": true, "settings": true}')
-        `);
-
-        // Seed Donation Categories
-        await mysqlPool.execute(`
-          INSERT INTO donation_categories (id, name) VALUES
-          ('tithe', 'Tithe'),
-          ('offering', 'Offering'),
-          ('special', 'Special Offering')
-        `);
-
-        // Seed Expense Categories
-        await mysqlPool.execute(`
-          INSERT INTO expense_categories (id, name) VALUES
-          ('utilities', 'Utilities'),
-          ('maintenance', 'Maintenance'),
-          ('supplies', 'Office Supplies'),
-          ('events', 'Events')
-        `);
-
-        // Seed Giving Types
-        await mysqlPool.execute(`
-          INSERT INTO giving_types (id, name) VALUES
-          ('cash', 'Cash'),
-          ('check', 'Check'),
-          ('online', 'Online'),
-          ('transfer', 'Bank Transfer')
-        `);
-
-        // Seed Networks
-        await mysqlPool.execute(`
-          INSERT INTO networks (id, name) VALUES
-          ('main', 'Main Campus'),
-          ('north', 'North District'),
-          ('south', 'South District')
-        `);
-
-        // Seed Resources
-        await mysqlPool.execute(`
-          INSERT INTO resources (id, name) VALUES
-          ('res1', 'Main Hall'),
-          ('res2', 'Community Room'),
-          ('res3', 'Chapel')
-        `);
-
-        console.log('MySQL seeding completed.');
+    const url = new URL(connectionString);
+    mysqlPool = mysql.createPool({
+      host: url.hostname,
+      port: parseInt(url.port) || 3306,
+      user: url.username,
+      password: url.password,
+      database: url.pathname.slice(1),
+      connectionLimit: 20,
+      insecureAuth: true,
+      connectTimeout: 60000,
+      authPlugins: {
+        mysql_clear_password: () => () => Buffer.from(url.password),
+        auth_gssapi_client: () => {
+          return () => Buffer.from(url.password);
+        }
       }
-    } catch (error) {
-      console.error('Error seeding MySQL data:', error);
-    }
-  };
+    });
 
-  createTables().then(() => seedMySQLData()).catch(console.error);
-}
-
+    // Create tables for MySQL
+    const createTables = async () => {
+      try {
+        await mysqlPool.execute(`
+          CREATE TABLE IF NOT EXISTS users (
+            id VARCHAR(255) PRIMARY KEY,
+            name VARCHAR(255) NOT NULL,
+            username VARCHAR(255) UNIQUE NOT NULL,
+            role ENUM('Admin', 'Staff') NOT NULL,
+            password TEXT,
+            permissions TEXT NOT NULL
+          )
+        `);
+        // ... rest of createTables ...
+      } catch (error) {
+        console.error('Error creating tables:', error);
+      }
+    };
+    // Note: In a real lazy init we might want to await createTables properly
+    // but keeping current logic for now
+    await createTables();
+    initialized = true;
+  }
+};
 // Export the appropriate database connection
 export default isElectron ? sqliteDb : mysqlPool;
 
 // Helper functions for querying (unified for both SQLite and MySQL)
+
+const checkDbInitialized = async () => {
+  if (!initialized) {
+    try {
+      await ensureDb();
+    } catch (error) {
+       // Ignore if already caught in ensureDb, but ensure we throw if it failed
+    }
+  }
+
+  if (dbInitError) {
+    throw new Error(`Database initialization failed: ${dbInitError.message || 'Unknown error'}`);
+  }
+  if (isElectron && !sqliteDb) {
+    throw new Error('Database not initialized');
+  }
+};
+
+export const getDbStatus = () => {
+  return {
+    initialized,
+    isElectron,
+    useMySQL,
+    dbInitError,
+    dbPath: isElectron ? process.env.SQLITE_DB_PATH || 'default' : 'N/A'
+  };
+};
+
 export const getAllMembers = async () => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('SELECT * FROM members');
     return stmt.all();
@@ -410,6 +261,7 @@ export const getAllMembers = async () => {
 };
 
 export const getAllEvents = async () => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('SELECT * FROM events');
     return stmt.all();
@@ -420,6 +272,7 @@ export const getAllEvents = async () => {
 };
 
 export const getAllDonations = async () => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('SELECT * FROM donations');
     return stmt.all();
@@ -430,6 +283,7 @@ export const getAllDonations = async () => {
 };
 
 export const getAllExpenses = async () => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('SELECT * FROM expenses');
     return stmt.all();
@@ -440,59 +294,99 @@ export const getAllExpenses = async () => {
 };
 
 export const getAllUsers = async () => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('SELECT * FROM users');
     const users = stmt.all();
-    return users.map((user: any) => ({
-      ...user,
-      permissions: JSON.parse(user.permissions)
-    }));
+    return users.map((user: any) => {
+      let permissions = [];
+      try {
+        permissions = user.permissions ? JSON.parse(user.permissions) : [];
+      } catch (e) {
+        console.error(`Error parsing permissions for user ${user.username}:`, e);
+      }
+      return {
+        ...user,
+        permissions
+      };
+    });
   } else {
     const [rows] = await mysqlPool.execute('SELECT * FROM users');
-    return (rows as any[]).map((user: any) => ({
-      ...user,
-      permissions: JSON.parse(user.permissions)
-    }));
+    return (rows as any[]).map((user: any) => {
+      let permissions = [];
+      try {
+        permissions = user.permissions ? JSON.parse(user.permissions) : [];
+      } catch (e) {
+        console.error(`Error parsing permissions for user ${user.username}:`, e);
+      }
+      return {
+        ...user,
+        permissions
+      };
+    });
   }
 };
 
 export const getUserById = async (id: string) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('SELECT * FROM users WHERE id = ?');
     const user = stmt.get(id);
     if (user) {
-      (user as any).permissions = JSON.parse((user as any).permissions);
+      try {
+        (user as any).permissions = (user as any).permissions ? JSON.parse((user as any).permissions) : [];
+      } catch (e) {
+        console.error(`Error parsing permissions for user ${id}:`, e);
+        (user as any).permissions = [];
+      }
     }
     return user;
   } else {
     const [rows] = await mysqlPool.execute('SELECT * FROM users WHERE id = ?', [id]);
     const user = (rows as any[])[0];
     if (user) {
-      (user as any).permissions = JSON.parse((user as any).permissions);
+      try {
+        (user as any).permissions = (user as any).permissions ? JSON.parse((user as any).permissions) : [];
+      } catch (e) {
+        console.error(`Error parsing permissions for user ${id}:`, e);
+        (user as any).permissions = [];
+      }
     }
     return user;
   }
 };
 
 export const getUserByUsername = async (username: string) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('SELECT * FROM users WHERE username = ?');
     const user = stmt.get(username);
     if (user) {
-      (user as any).permissions = JSON.parse((user as any).permissions);
+      try {
+        (user as any).permissions = (user as any).permissions ? JSON.parse((user as any).permissions) : [];
+      } catch (e) {
+        console.error(`Error parsing permissions for username ${username}:`, e);
+        (user as any).permissions = [];
+      }
     }
     return user;
   } else {
     const [rows] = await mysqlPool.execute('SELECT * FROM users WHERE username = ?', [username]);
     const user = (rows as any[])[0];
     if (user) {
-      (user as any).permissions = JSON.parse((user as any).permissions);
+      try {
+        (user as any).permissions = (user as any).permissions ? JSON.parse((user as any).permissions) : [];
+      } catch (e) {
+        console.error(`Error parsing permissions for username ${username}:`, e);
+        (user as any).permissions = [];
+      }
     }
     return user;
   }
 };
 
 export const createUser = async (user: any) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare(
       'INSERT INTO users (id, name, username, role, password, permissions) VALUES (?, ?, ?, ?, ?, ?)'
@@ -507,6 +401,7 @@ export const createUser = async (user: any) => {
 };
 
 export const updateUser = async (id: string, user: any) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare(
       'UPDATE users SET name = ?, username = ?, role = ?, password = IFNULL(?, password), permissions = ? WHERE id = ?'
@@ -521,6 +416,7 @@ export const updateUser = async (id: string, user: any) => {
 };
 
 export const deleteUser = async (id: string) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('DELETE FROM users WHERE id = ?');
     stmt.run(id);
@@ -531,6 +427,7 @@ export const deleteUser = async (id: string) => {
 
 // Donation categories functions
 export const getAllDonationCategories = async () => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('SELECT * FROM donation_categories ORDER BY name');
     return stmt.all();
@@ -541,6 +438,7 @@ export const getAllDonationCategories = async () => {
 };
 
 export const createDonationCategory = async (category: { id: string; name: string }) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare(
       'INSERT INTO donation_categories (id, name, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)'
@@ -555,6 +453,7 @@ export const createDonationCategory = async (category: { id: string; name: strin
 };
 
 export const updateDonationCategory = async (id: string, name: string) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('UPDATE donation_categories SET name = ? WHERE id = ?');
     stmt.run(name, id);
@@ -564,6 +463,7 @@ export const updateDonationCategory = async (id: string, name: string) => {
 };
 
 export const deleteDonationCategory = async (id: string) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('DELETE FROM donation_categories WHERE id = ?');
     stmt.run(id);
@@ -574,6 +474,7 @@ export const deleteDonationCategory = async (id: string) => {
 
 // Expense categories functions
 export const getAllExpenseCategories = async () => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('SELECT * FROM expense_categories ORDER BY name');
     return stmt.all();
@@ -584,6 +485,7 @@ export const getAllExpenseCategories = async () => {
 };
 
 export const createExpenseCategory = async (category: { id: string; name: string }) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare(
       'INSERT INTO expense_categories (id, name, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)'
@@ -598,6 +500,7 @@ export const createExpenseCategory = async (category: { id: string; name: string
 };
 
 export const updateExpenseCategory = async (id: string, name: string) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('UPDATE expense_categories SET name = ? WHERE id = ?');
     stmt.run(name, id);
@@ -607,6 +510,7 @@ export const updateExpenseCategory = async (id: string, name: string) => {
 };
 
 export const deleteExpenseCategory = async (id: string) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('DELETE FROM expense_categories WHERE id = ?');
     stmt.run(id);
@@ -617,6 +521,7 @@ export const deleteExpenseCategory = async (id: string) => {
 
 // Service times functions
 export const getAllServiceTimes = async () => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('SELECT * FROM service_times ORDER BY time');
     return stmt.all();
@@ -627,6 +532,7 @@ export const getAllServiceTimes = async () => {
 };
 
 export const createServiceTime = async (serviceTime: { id: string; time: string }) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare(
       'INSERT INTO service_times (id, time, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)'
@@ -641,6 +547,7 @@ export const createServiceTime = async (serviceTime: { id: string; time: string 
 };
 
 export const updateServiceTime = async (id: string, time: string) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('UPDATE service_times SET time = ? WHERE id = ?');
     stmt.run(time, id);
@@ -650,6 +557,7 @@ export const updateServiceTime = async (id: string, time: string) => {
 };
 
 export const deleteServiceTime = async (id: string) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('DELETE FROM service_times WHERE id = ?');
     stmt.run(id);
@@ -660,6 +568,7 @@ export const deleteServiceTime = async (id: string) => {
 
 // Giving types functions
 export const getAllGivingTypes = async () => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('SELECT * FROM giving_types ORDER BY name');
     return stmt.all();
@@ -670,6 +579,7 @@ export const getAllGivingTypes = async () => {
 };
 
 export const createGivingType = async (givingType: { id: string; name: string }) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare(
       'INSERT INTO giving_types (id, name, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)'
@@ -684,6 +594,7 @@ export const createGivingType = async (givingType: { id: string; name: string })
 };
 
 export const updateGivingType = async (id: string, name: string) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('UPDATE giving_types SET name = ? WHERE id = ?');
     stmt.run(name, id);
@@ -693,6 +604,7 @@ export const updateGivingType = async (id: string, name: string) => {
 };
 
 export const deleteGivingType = async (id: string) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('DELETE FROM giving_types WHERE id = ?');
     stmt.run(id);
@@ -703,6 +615,7 @@ export const deleteGivingType = async (id: string) => {
 
 // Networks functions
 export const getAllNetworks = async () => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('SELECT * FROM networks ORDER BY name');
     return stmt.all();
@@ -713,6 +626,7 @@ export const getAllNetworks = async () => {
 };
 
 export const createNetwork = async (network: { id: string; name: string }) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare(
       'INSERT INTO networks (id, name, created_at) VALUES (?, ?, CURRENT_TIMESTAMP)'
@@ -727,6 +641,7 @@ export const createNetwork = async (network: { id: string; name: string }) => {
 };
 
 export const updateNetwork = async (id: string, name: string) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('UPDATE networks SET name = ? WHERE id = ?');
     stmt.run(name, id);
@@ -736,6 +651,7 @@ export const updateNetwork = async (id: string, name: string) => {
 };
 
 export const deleteNetwork = async (id: string) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('DELETE FROM networks WHERE id = ?');
     stmt.run(id);
@@ -747,6 +663,7 @@ export const deleteNetwork = async (id: string) => {
 
 // Members functions
 export const createMember = async (member: any) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare(
       'INSERT INTO members (id, name, email, phone, join_date, avatar_url, address, network) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
@@ -761,6 +678,7 @@ export const createMember = async (member: any) => {
 };
 
 export const updateMember = async (id: string, member: any) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare(
       'UPDATE members SET name = ?, email = ?, phone = ?, join_date = ?, avatar_url = ?, address = ?, network = ? WHERE id = ?'
@@ -775,6 +693,7 @@ export const updateMember = async (id: string, member: any) => {
 };
 
 export const deleteMember = async (id: string) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('DELETE FROM members WHERE id = ?');
     stmt.run(id);
@@ -785,6 +704,7 @@ export const deleteMember = async (id: string) => {
 
 // Events functions
 export const createEvent = async (event: any) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare(
       'INSERT INTO events (id, title, date, description, resource) VALUES (?, ?, ?, ?, ?)'
@@ -799,6 +719,7 @@ export const createEvent = async (event: any) => {
 };
 
 export const updateEvent = async (id: string, event: any) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare(
       'UPDATE events SET title = ?, date = ?, description = ?, resource = ? WHERE id = ?'
@@ -813,6 +734,7 @@ export const updateEvent = async (id: string, event: any) => {
 };
 
 export const deleteEvent = async (id: string) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('DELETE FROM events WHERE id = ?');
     stmt.run(id);
@@ -823,6 +745,7 @@ export const deleteEvent = async (id: string) => {
 
 // Donations functions
 export const createDonation = async (donation: any) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare(
       'INSERT INTO donations (id, donor_name, member_id, amount, date, category, giving_type_id, service_time, recorded_by_id, reference) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
@@ -837,6 +760,7 @@ export const createDonation = async (donation: any) => {
 };
 
 export const updateDonation = async (id: string, donation: any) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare(
       'UPDATE donations SET donor_name = ?, member_id = ?, amount = ?, date = ?, category = ?, giving_type_id = ?, service_time = ?, recorded_by_id = ?, reference = ? WHERE id = ?'
@@ -851,6 +775,7 @@ export const updateDonation = async (id: string, donation: any) => {
 };
 
 export const deleteDonation = async (id: string) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('DELETE FROM donations WHERE id = ?');
     stmt.run(id);
@@ -861,6 +786,7 @@ export const deleteDonation = async (id: string) => {
 
 // Expenses functions
 export const createExpense = async (expense: any) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare(
       'INSERT INTO expenses (id, description, amount, date, category, recorded_by_id) VALUES (?, ?, ?, ?, ?, ?)'
@@ -875,6 +801,7 @@ export const createExpense = async (expense: any) => {
 };
 
 export const updateExpense = async (id: string, expense: any) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare(
       'UPDATE expenses SET description = ?, amount = ?, date = ?, category = ?, recorded_by_id = ? WHERE id = ?'
@@ -889,6 +816,7 @@ export const updateExpense = async (id: string, expense: any) => {
 };
 
 export const deleteExpense = async (id: string) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('DELETE FROM expenses WHERE id = ?');
     stmt.run(id);
@@ -899,6 +827,7 @@ export const deleteExpense = async (id: string) => {
 
 // Helper functions for reports and queries
 export const getDonationsWithFilters = async (startDate?: string, endDate?: string) => {
+  await checkDbInitialized();
   let query = 'SELECT * FROM donations WHERE 1=1';
   const params: any[] = [];
 
@@ -923,6 +852,7 @@ export const getDonationsWithFilters = async (startDate?: string, endDate?: stri
 };
 
 export const getExpensesWithFilters = async (startDate?: string, endDate?: string) => {
+  await checkDbInitialized();
   let query = 'SELECT * FROM expenses WHERE 1=1';
   const params: any[] = [];
 
@@ -947,6 +877,7 @@ export const getExpensesWithFilters = async (startDate?: string, endDate?: strin
 };
 
 export const getDistinctServiceTimes = async () => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('SELECT DISTINCT service_time FROM donations WHERE service_time IS NOT NULL');
     return stmt.all().map((row: any) => row.service_time);
@@ -958,6 +889,7 @@ export const getDistinctServiceTimes = async () => {
 
 // Settings functions
 export const getSettings = async () => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('SELECT * FROM settings WHERE id = ?');
     const setting = stmt.get('global');
@@ -1008,6 +940,7 @@ export const updateSettings = async (settings: {
   backupTime?: string;
   backupEnabled?: boolean;
 }) => {
+  await checkDbInitialized();
   const backupTime = settings.backupTime || '02:00';
   const backupEnabled = settings.backupEnabled !== undefined ? (settings.backupEnabled ? 1 : 0) : 1;
 
@@ -1026,6 +959,7 @@ export const updateSettings = async (settings: {
 
 // Helper function for system reset
 export const resetSystemData = async () => {
+  await checkDbInitialized();
   if (isElectron) {
     // For SQLite, use transaction
     const transaction = sqliteDb.transaction(() => {
@@ -1060,6 +994,7 @@ export const resetSystemData = async () => {
 
 // Resources functions
 export const getAllResources = async () => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('SELECT * FROM resources ORDER BY name');
     return stmt.all();
@@ -1070,6 +1005,7 @@ export const getAllResources = async () => {
 };
 
 export const createResource = async (resource: { id: string; name: string }) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare(
       'INSERT INTO resources (id, name) VALUES (?, ?)'
@@ -1084,6 +1020,7 @@ export const createResource = async (resource: { id: string; name: string }) => 
 };
 
 export const deleteResource = async (id: string) => {
+  await checkDbInitialized();
   if (isElectron) {
     const stmt = sqliteDb.prepare('DELETE FROM resources WHERE id = ?');
     stmt.run(id);

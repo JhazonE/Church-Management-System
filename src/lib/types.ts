@@ -166,6 +166,8 @@ export interface ElectronAPI {
   isMaximized: () => Promise<boolean>;
   toggleFullscreen: () => Promise<void>;
   isFullscreen: () => Promise<boolean>;
+  restart: () => Promise<void>;
+  quit: () => Promise<void>;
   printPage: (options?: PrintOptions) => Promise<boolean>;
   printToPDF: (options?: PDFOptions) => Promise<Uint8Array>;
   showPrintPreview: (options?: PrintPreviewOptions) => Promise<{ success: boolean }>;

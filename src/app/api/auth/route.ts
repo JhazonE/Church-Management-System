@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getUserByUsername } from '@/lib/database';
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 
 export async function POST(request: NextRequest) {
   try {
@@ -44,10 +44,15 @@ export async function POST(request: NextRequest) {
     const { password: _, ...userWithoutPassword } = user;
 
     return NextResponse.json(userWithoutPassword);
-  } catch (error) {
+  } catch (error: any) {
     console.error('Authentication error:', error);
     return NextResponse.json(
-      { error: 'Authentication failed' },
+      { 
+        error: 'Authentication failed', 
+        details: error.message,
+        type: error.name,
+        stack: process.env.NODE_ENV !== 'production' || process.env.ELECTRON === 'true' ? error.stack : undefined
+      },
       { status: 500 }
     );
   }

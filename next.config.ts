@@ -59,14 +59,11 @@ const nextConfig: NextConfig = {
   // Electron production-specific configuration - only apply in production builds
   // Electron uses server mode in development, static files in production
   ...(isElectronProduction && {
-    trailingSlash: true,
-    distDir: 'out',
-    assetPrefix: './',
-    basePath: '',
+    // simplified production config, relying on standard .next build
   }),
   // Disable server-side features in Electron build
   ...(isElectron && {
-    serverExternalPackages: [],
+    serverExternalPackages: ['better-sqlite3'],
   }),
 };
 

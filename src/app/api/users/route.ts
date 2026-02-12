@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAllUsers, createUser, updateUser, deleteUser } from '@/lib/database';
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 
 export async function GET() {
   try {

@@ -44,6 +44,18 @@ ipcMain.handle('is-fullscreen', () => {
   return mainWindow ? mainWindow.isFullScreen() : false;
 });
 
+// App lifecycle controls
+ipcMain.handle('restart-app', () => {
+  console.log('IPC: restart-app called');
+  app.relaunch();
+  app.quit();
+});
+
+ipcMain.handle('quit-app', () => {
+  console.log('IPC: quit-app called');
+  app.quit();
+});
+
 // Printing functionality
 ipcMain.handle('print-page', async (event, options = {}) => {
   try {
@@ -284,7 +296,8 @@ function startNextServer() {
   return new Promise((resolve, reject) => {
     // In packaged app, we need to use the unpacked app directory
     const isPackaged = app.isPackaged;
-    const appPath = isPackaged ? path.dirname(app.getAppPath()) : path.join(__dirname, '..');
+    // With asar: false, appPath is the folder containing package.json
+    const appPath = isPackaged ? app.getAppPath() : path.join(__dirname, '..');
 
     console.log('App path:', appPath);
     console.log('Is packaged:', isPackaged);
@@ -299,26 +312,76 @@ function startNextServer() {
     console.log('Trying to start Next.js server...');
     console.log('Next bin path:', nextServerPath);
 
+    // Prepare writable database path
+    const userDataPath = app.getPath('userData');
+    const dbPath = path.join(userDataPath, 'database.sqlite');
+    const bundledDbPath = path.join(appPath, 'data', 'database.sqlite');
+
+    console.log('User Data Path:', userDataPath);
+    console.log('Writable DB Path:', dbPath);
+    console.log('Bundled DB Path:', bundledDbPath);
+
+    const fs = require('fs');
+    
+    // Ensure data directory exists in userData
+    if (!fs.existsSync(userDataPath)) {
+      fs.mkdirSync(userDataPath, { recursive: true });
+    }
+
+    // Copy bundled DB to userData if it doesn't exist there
+    if (!fs.existsSync(dbPath)) {
+      if (fs.existsSync(bundledDbPath)) {
+        console.log('Copying bundled database to writable location...');
+        fs.copyFileSync(bundledDbPath, dbPath);
+        console.log('Database copied successfully.');
+      } else {
+        console.warn('Bundled database not found! App will create a new empty one.');
+      }
+    } else {
+      console.log('Using existing database in writable location.');
+    }
+
+    // Check if node executable exists (for fallback)
+    if (!fs.existsSync(nextServerPath)) {
+      console.error('Next executable not found at:', nextServerPath);
+      // Fallback: try finding it in node_modules/next/dist/bin/next
+      const fallbackPath = path.join(appPath, 'node_modules', 'next', 'dist', 'bin', 'next');
+      console.log('Checking fallback path:', fallbackPath);
+    }
+
     // Start the server - spawn directly on Windows, use node on Unix
+    let spawnCmd = nextServerPath;
+    let spawnArgs = ['start'];
+    
+    // In production/packaged mode, we might need to invoke node directly if the .cmd doesn't work well
+    if (process.platform === 'win32' && !fs.existsSync(nextServerPath)) {
+       // Manual invocation
+       spawnCmd = 'node';
+       spawnArgs = [path.join(appPath, 'node_modules/next/dist/bin/next'), 'start'];
+    }
+
+    console.log(`Spawning: ${spawnCmd} ${spawnArgs.join(' ')}`);
+
+    const spawnEnv = {
+      ...process.env,
+      NODE_ENV: 'production',
+      PORT: '3000',
+      SQLITE_DB_PATH: dbPath, // Pass writable DB path to Next.js
+      ELECTRON: 'true',
+      // FORCE_SQLITE: 'true' // Do not force SQLite, let the environment decide
+    };
+
     if (process.platform === 'win32') {
-      nextServer = spawn(nextServerPath, ['start'], {
+      nextServer = spawn(spawnCmd, spawnArgs, {
         cwd: appPath,
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          NODE_ENV: 'production',
-          PORT: '3000'
-        }
+        env: spawnEnv
       });
     } else {
-      nextServer = spawn(process.execPath, [nextServerPath, 'start'], {
+      nextServer = spawn(spawnCmd, spawnArgs, {
         cwd: appPath,
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          NODE_ENV: 'production',
-          PORT: '3000'
-        }
+        env: spawnEnv
       });
     }
 
@@ -359,49 +422,51 @@ function startNextServer() {
     nextServer.on('close', (code) => {
       console.log(`Next.js server exited with code ${code}`);
       if (!serverReady) {
-        reject(new Error(`Next.js server exited with code ${code}`));
+        // Don't reject immediately on close if we haven't seen ready yet, 
+        // as sometimes it might fork or behave oddly. But usually code != 0 is bad.
+        if (code !== 0) {
+             reject(new Error(`Next.js server exited with code ${code}`));
+        }
       }
     });
 
     // Alternative: Try to connect to the server after a delay
-    setTimeout(async () => {
-      if (!serverReady) {
-        console.log('Checking if server is running by attempting connection...');
-        try {
-          // Try to make a simple HTTP request to check if server is running
-          const http = require('http');
-          const req = http.request({
-            hostname: 'localhost',
-            port: 3000,
-            path: '/',
-            method: 'HEAD',
-            timeout: 2000
-          }, (res) => {
-            console.log('Server connection successful, status:', res.statusCode);
-            serverReady = true;
-            if (startupTimeout) clearTimeout(startupTimeout);
-            resolve();
-          });
+    // This handles cases where stdout buffering hides the 'Ready' message
+    const checkServer = () => {
+      if (serverReady) return;
 
-          req.on('error', (err) => {
-            console.log('Server connection failed:', err.message);
-            // Server not ready yet, continue waiting
-          });
+      console.log('Checking if server is running by attempting connection...');
+      try {
+        const http = require('http');
+        const req = http.request({
+          hostname: 'localhost',
+          port: 3000,
+          path: '/',
+          method: 'HEAD',
+          timeout: 2000
+        }, (res) => {
+          console.log('Server connection successful, status:', res.statusCode);
+          serverReady = true;
+          if (startupTimeout) clearTimeout(startupTimeout);
+          resolve();
+        });
 
-          req.on('timeout', () => {
-            console.log('Server connection timeout');
-            req.destroy();
-          });
-
-          req.end();
-        } catch (error) {
-          console.log('Connection check failed:', error.message);
-        }
+        req.on('error', (err) => {
+          // Server not ready yet
+        });
+        
+        req.end();
+      } catch (error) {
+        // Ignore errors
       }
-    }, 10000); // Check after 10 seconds
+    };
+
+    // Check periodically
+    const checkInterval = setInterval(checkServer, 3000);
 
     // Final timeout
     startupTimeout = setTimeout(() => {
+      clearInterval(checkInterval);
       if (!serverReady) {
         reject(new Error('Next.js server startup timeout - server did not respond'));
       }
@@ -423,7 +488,7 @@ async function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       webSecurity: false // Allow loading local resources in development
     },
-    icon: path.join(__dirname, '../public/icons/icon-512x512.png'),
+    icon: path.join(__dirname, '../public/CLC logo2.png'),
     show: false, // Don't show until ready
     frame: true, // Use standard window frame
     titleBarStyle: 'default'
@@ -559,12 +624,12 @@ async function startApp() {
         label: 'View',
         submenu: [
           { role: 'reload' },
-          { role: 'forcereload' },
-          { role: 'toggledevtools' },
+          { role: 'forceReload' },
+          { role: 'toggleDevTools' },
           { type: 'separator' },
-          { role: 'resetzoom' },
-          { role: 'zoomin' },
-          { role: 'zoomout' },
+          { role: 'resetZoom' },
+          { role: 'zoomIn' },
+          { role: 'zoomOut' },
           { type: 'separator' },
           { role: 'togglefullscreen' }
         ]
@@ -621,7 +686,7 @@ async function startApp() {
       ];
     }
 
-    // Remove the application menu bar
+    // Remove the application menu bar header
     Menu.setApplicationMenu(null);
 
     // Register global shortcuts

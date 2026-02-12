@@ -24,6 +24,8 @@ const electronAPI = {
   isMaximized: () => ipcRenderer.invoke('is-maximized'),
   toggleFullscreen: () => ipcRenderer.invoke('toggle-fullscreen'),
   isFullscreen: () => ipcRenderer.invoke('is-fullscreen'),
+  restart: () => ipcRenderer.invoke('restart-app'),
+  quit: () => ipcRenderer.invoke('quit-app'),
 
   // Printing functionality
   printPage: (options) => ipcRenderer.invoke('print-page', options),
