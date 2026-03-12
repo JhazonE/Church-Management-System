@@ -52,15 +52,46 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const authContext = useContext(AuthContext);
   const { settings, updateSettings } = useSettings();
+  const [isInitializing, setIsInitializing] = React.useState(true);
 
-  if (!authContext) {
-    // This can happen if the component is rendered outside of the AuthProvider
-    // You might want to redirect to login or show an error.
-    // For now, we can prevent rendering the layout.
-    if (typeof window !== 'undefined') {
-      router.push('/login');
+  React.useEffect(() => {
+    // Wait for auth context to initialize from localStorage
+    if (authContext) {
+      const { user } = authContext;
+      
+      // If not logged in, redirect to login page
+      if (!user) {
+        router.push('/login');
+      } else {
+        // Find current page in nav items
+        const currentNavItem = navItems.find(item => pathname.startsWith(item.href));
+        
+        // If on a protected route but no permission, redirect
+        if (currentNavItem && !user.permissions?.[currentNavItem.id]) {
+          // Find first available page
+          const firstAvailablePage = navItems.find(item => user.permissions?.[item.id]);
+          if (firstAvailablePage) {
+            router.push(firstAvailablePage.href);
+          } else {
+            // If No permissions at all, log out
+            authContext.logout();
+            router.push('/login');
+          }
+        }
+      }
+      setIsInitializing(false);
     }
-    return null;
+  }, [authContext, pathname, router]);
+
+  if (!authContext || isInitializing) {
+    return (
+      <div className="flex h-screen w-full items-center justify-center bg-background">
+        <div className="flex flex-col items-center gap-4">
+          <div className="h-12 w-12 animate-spin rounded-full border-b-2 border-primary"></div>
+          <p className="text-sm text-muted-foreground animate-pulse">Loading secure session...</p>
+        </div>
+      </div>
+    );
   }
 
   const { user, logout } = authContext;
