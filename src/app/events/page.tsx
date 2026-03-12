@@ -157,6 +157,12 @@ export default function EventsPage() {
     try {
       const response = await fetch('/api/events');
       if (response.ok) {
+        const contentType = response.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+          const text = await response.text();
+          console.error('Expected JSON but received:', text.substring(0, 100));
+          throw new Error('Server returned non-JSON response');
+        }
         const data = await response.json();
         // Convert date strings to Date objects
         const eventsWithDates: UIEvent[] = data.map((event: any) => ({
@@ -180,6 +186,12 @@ export default function EventsPage() {
     try {
       const response = await fetch('/api/resources');
       if (response.ok) {
+        const contentType = response.headers.get('content-type');
+        if (!contentType || !contentType.includes('application/json')) {
+          const text = await response.text();
+          console.error('Expected JSON but received:', text.substring(0, 100));
+          throw new Error('Server returned non-JSON response');
+        }
         const data = await response.json();
         setResources(data);
       }
