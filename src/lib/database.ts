@@ -4,6 +4,7 @@ import { Pool as PgPool } from 'pg';
 import { URL } from 'node:url';
 import dotenv from 'dotenv';
 import { createRequire } from 'module';
+import fs from 'fs';
 
 const require = createRequire(import.meta.url);
 
@@ -12,165 +13,235 @@ dotenv.config({ path: '.env.local' });
 
 // Database selection logic
 const usePostgres = process.env.USE_POSTGRES === 'true' || (process.env.DATABASE_URL && process.env.DATABASE_URL.startsWith('postgres'));
-const useMySQL = !usePostgres && (process.env.DATABASE_URL || process.env.FORCE_MYSQL === 'true');
-const useSQLite = !usePostgres && !useMySQL && (process.env.FORCE_SQLITE === 'true' || !process.env.NODE_ENV?.includes('production'));
-const isElectron = !usePostgres && !useMySQL && (process.env.ELECTRON === 'true' || process.env.NODE_ENV !== 'production');
+const useSQLite = !usePostgres && (process.env.FORCE_SQLITE === 'true' || (process.env.ELECTRON === 'true' && process.env.FORCE_MYSQL !== 'true') || (!process.env.DATABASE_URL && process.env.FORCE_MYSQL !== 'true'));
+const useMySQL = !usePostgres && !useSQLite && (!!process.env.DATABASE_URL || process.env.FORCE_MYSQL === 'true');
+const isElectron = useSQLite;
 
 let sqliteDb: any;
 let mysqlPool: any;
 let pgPool: PgPool | undefined;
+let dbInitError: any = null;
+let initialized = false;
 
-if (usePostgres) {
-  const connectionString = process.env.DATABASE_URL;
-  if (!connectionString) {
-    throw new Error('DATABASE_URL is required for Postgres connection');
-  }
+export const ensureDb = async () => {
+  if (initialized) return;
 
-  pgPool = new PgPool({
-    connectionString,
-    ssl: {
-      rejectUnauthorized: false // Required for Neon and other hosted Postgres
+  try {
+    if (usePostgres) {
+      const connectionString = process.env.DATABASE_URL;
+      if (!connectionString) {
+        throw new Error('DATABASE_URL is required for Postgres connection');
+      }
+
+      pgPool = new PgPool({
+        connectionString,
+        ssl: {
+          rejectUnauthorized: false // Required for Neon and other hosted Postgres
+        }
+      });
+      console.log('Using Postgres database');
+      initialized = true;
+    } else if (isElectron) {
+      // Use SQLite for Electron
+      const Database = require('better-sqlite3');
+      
+      // Allow overriding DB path via env var (for production where we need writable location)
+      let dbPath = process.env.SQLITE_DB_PATH;
+      
+      if (!dbPath) {
+        const dataDir = path.join(process.cwd(), 'data');
+        // Create data directory if it doesn't exist
+        if (!fs.existsSync(dataDir)) {
+          fs.mkdirSync(dataDir, { recursive: true });
+        }
+        dbPath = path.join(dataDir, 'database.sqlite');
+      }
+      
+      console.log('Initializing SQLite database at:', dbPath);
+      sqliteDb = new Database(dbPath);
+
+      // Enable WAL mode for better performance
+      sqliteDb.pragma('journal_mode = WAL');
+
+      // Create tables for SQLite
+      const createTablesSQL = `
+        CREATE TABLE IF NOT EXISTS users (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          username TEXT UNIQUE NOT NULL,
+          role TEXT NOT NULL CHECK (role IN ('Admin', 'Staff')),
+          password TEXT,
+          permissions TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS members (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL,
+          email TEXT UNIQUE NOT NULL,
+          phone TEXT,
+          join_date TEXT NOT NULL,
+          avatar_url TEXT,
+          address TEXT,
+          network TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS events (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          date TEXT NOT NULL,
+          description TEXT NOT NULL,
+          resource TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS resources (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL UNIQUE
+        );
+
+        CREATE TABLE IF NOT EXISTS donations (
+          id TEXT PRIMARY KEY,
+          donor_name TEXT NOT NULL,
+          member_id TEXT REFERENCES members(id),
+          amount REAL NOT NULL,
+          date TEXT NOT NULL,
+          category TEXT NOT NULL,
+          giving_type_id TEXT REFERENCES giving_types(id),
+          service_time TEXT,
+          recorded_by_id TEXT REFERENCES users(id),
+          reference TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS expenses (
+          id TEXT PRIMARY KEY,
+          description TEXT NOT NULL,
+          amount REAL NOT NULL,
+          date TEXT NOT NULL,
+          category TEXT NOT NULL,
+          recorded_by_id TEXT REFERENCES users(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS donation_categories (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS expense_categories (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS service_times (
+          id TEXT PRIMARY KEY,
+          time TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS giving_types (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS networks (
+          id TEXT PRIMARY KEY,
+          name TEXT NOT NULL UNIQUE,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS settings (
+          id TEXT PRIMARY KEY DEFAULT 'global',
+          app_name TEXT NOT NULL DEFAULT 'CLC Finances',
+          logo_url TEXT NOT NULL DEFAULT '/CLC logo2.png',
+          theme TEXT NOT NULL DEFAULT 'dark' CHECK (theme IN ('light', 'dark')),
+          backup_time TEXT NOT NULL DEFAULT '02:00',
+          backup_enabled BOOLEAN NOT NULL DEFAULT 1,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+      `;
+
+      sqliteDb.exec(createTablesSQL);
+
+      // Insert default settings if not exists
+      const insertDefaultSettingsSQL = `
+        INSERT OR IGNORE INTO settings (id, app_name, logo_url, theme, backup_time, backup_enabled, updated_at) VALUES
+        ('global', 'CLC Finances', '/CLC logo2.png', 'dark', '02:00', 1, CURRENT_TIMESTAMP);
+      `;
+
+      sqliteDb.exec(insertDefaultSettingsSQL);
+      initialized = true;
+      console.log('Database initialized successfully using SQLite');
+    } else if (useMySQL) {
+      // Use MySQL for web deployment
+      const connectionString = process.env.DATABASE_URL || 'mysql://clc_user:clc_password@localhost:3306/clc_finance';
+
+      const url = new URL(connectionString);
+      mysqlPool = mysql.createPool({
+        host: url.hostname,
+        port: parseInt(url.port) || 3306,
+        user: url.username,
+        password: url.password,
+        database: url.pathname.slice(1),
+        connectionLimit: 20,
+        insecureAuth: true,
+        connectTimeout: 60000,
+        authPlugins: {
+          mysql_clear_password: () => () => Buffer.from(url.password),
+          auth_gssapi_client: () => {
+            return () => Buffer.from(url.password);
+          }
+        }
+      });
+      initialized = true;
+      console.log('Database initialized successfully using MySQL');
     }
-  });
-  console.log('Using Postgres database');
-} else if (isElectron) {
-  // Use SQLite for Electron
-  const Database = require('better-sqlite3');
-  const dbPath = path.join(process.cwd(), 'data', 'database.sqlite');
-  sqliteDb = new Database(dbPath);
-
-  // Enable WAL mode for better performance
-  sqliteDb.pragma('journal_mode = WAL');
-
-  // Create tables for SQLite
-  const createTablesSQL = `
-    CREATE TABLE IF NOT EXISTS users (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      username TEXT UNIQUE NOT NULL,
-      role TEXT NOT NULL CHECK (role IN ('Admin', 'Staff')),
-      password TEXT,
-      permissions TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS members (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      email TEXT UNIQUE NOT NULL,
-      phone TEXT,
-      join_date TEXT NOT NULL,
-      avatar_url TEXT,
-      address TEXT,
-      network TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS events (
-      id TEXT PRIMARY KEY,
-      title TEXT NOT NULL,
-      date TEXT NOT NULL,
-      description TEXT NOT NULL,
-      resource TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS resources (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL UNIQUE
-    );
-
-    CREATE TABLE IF NOT EXISTS donations (
-      id TEXT PRIMARY KEY,
-      donor_name TEXT NOT NULL,
-      member_id TEXT REFERENCES members(id),
-      amount REAL NOT NULL,
-      date TEXT NOT NULL,
-      category TEXT NOT NULL,
-      giving_type_id TEXT REFERENCES giving_types(id),
-      service_time TEXT,
-      recorded_by_id TEXT REFERENCES users(id),
-      reference TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS expenses (
-      id TEXT PRIMARY KEY,
-      description TEXT NOT NULL,
-      amount REAL NOT NULL,
-      date TEXT NOT NULL,
-      category TEXT NOT NULL,
-      recorded_by_id TEXT REFERENCES users(id)
-    );
-
-    CREATE TABLE IF NOT EXISTS donation_categories (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL UNIQUE,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS expense_categories (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL UNIQUE,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS service_times (
-      id TEXT PRIMARY KEY,
-      time TEXT NOT NULL UNIQUE,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS giving_types (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL UNIQUE,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS networks (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL UNIQUE,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-
-    CREATE TABLE IF NOT EXISTS settings (
-      id TEXT PRIMARY KEY DEFAULT 'global',
-      app_name TEXT NOT NULL DEFAULT 'CLC Finances',
-      logo_url TEXT NOT NULL DEFAULT '/CLC logo2.png',
-      theme TEXT NOT NULL DEFAULT 'dark' CHECK (theme IN ('light', 'dark')),
-      backup_time TEXT NOT NULL DEFAULT '02:00',
-      backup_enabled BOOLEAN NOT NULL DEFAULT 1,
-      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-  `;
-
-  sqliteDb.exec(createTablesSQL);
-
-  // Insert default settings if not exists
-  const insertDefaultSettingsSQL = `
-    INSERT OR IGNORE INTO settings (id, app_name, logo_url, theme, backup_time, backup_enabled, updated_at) VALUES
-    ('global', 'CLC Finances', '/CLC logo2.png', 'dark', '02:00', 1, CURRENT_TIMESTAMP);
-  `;
-
-  sqliteDb.exec(insertDefaultSettingsSQL);
-} else {
-  // Use MySQL for web deployment
-  const connectionString = process.env.DATABASE_URL || 'mysql://clc_user:clc_password@localhost:3306/clc_finance';
-
-  const url = new URL(connectionString);
-  mysqlPool = mysql.createPool({
-    host: url.hostname,
-    port: parseInt(url.port) || 3306,
-    user: url.username,
-    password: url.password,
-    database: url.pathname.slice(1),
-    connectionLimit: 20,
-    insecureAuth: true,
-    connectTimeout: 60000,
-  });
-}
+  } catch (error) {
+    dbInitError = error;
+    console.error('Database initialization failed:', error);
+    throw error;
+  }
+};
 
 // Export the appropriate database connection
 export default usePostgres ? pgPool : (isElectron ? sqliteDb : mysqlPool);
 
 // Helper functions for querying (unified for SQLite, MySQL, and Postgres)
+const checkDbInitialized = async () => {
+  if (!initialized) {
+    try {
+      await ensureDb();
+    } catch (error) {
+       // Ignore if already caught in ensureDb, but ensure we throw if it failed
+    }
+  }
+
+  if (dbInitError) {
+    throw new Error(`Database initialization failed: ${dbInitError.message || 'Unknown error'}`);
+  }
+  if (usePostgres && !pgPool) {
+    throw new Error('Postgres database not initialized');
+  }
+  if (isElectron && !sqliteDb) {
+    throw new Error('SQLite database not initialized');
+  }
+  if (useMySQL && !mysqlPool) {
+    throw new Error('MySQL database not initialized');
+  }
+};
+
+export const getDbStatus = () => {
+  return {
+    initialized,
+    isElectron,
+    useMySQL,
+    usePostgres,
+    dbInitError,
+    dbPath: isElectron ? process.env.SQLITE_DB_PATH || 'default' : 'N/A'
+  };
+};
 export const getAllMembers = async () => {
+  await checkDbInitialized();
   if (usePostgres) {
     const { rows } = await pgPool!.query('SELECT * FROM members');
     return rows;
@@ -184,6 +255,7 @@ export const getAllMembers = async () => {
 };
 
 export const getAllEvents = async () => {
+  await checkDbInitialized();
   if (usePostgres) {
     const { rows } = await pgPool!.query('SELECT * FROM events');
     return rows;
@@ -197,6 +269,7 @@ export const getAllEvents = async () => {
 };
 
 export const getAllDonations = async () => {
+  await checkDbInitialized();
   if (usePostgres) {
     const { rows } = await pgPool!.query('SELECT * FROM donations');
     return rows;
@@ -210,6 +283,7 @@ export const getAllDonations = async () => {
 };
 
 export const getAllExpenses = async () => {
+  await checkDbInitialized();
   if (usePostgres) {
     const { rows } = await pgPool!.query('SELECT * FROM expenses');
     return rows;
@@ -223,6 +297,7 @@ export const getAllExpenses = async () => {
 };
 
 export const getAllUsers = async () => {
+  await checkDbInitialized();
   if (usePostgres) {
     const { rows } = await pgPool!.query('SELECT * FROM users');
     return rows.map((user: any) => ({
@@ -232,20 +307,37 @@ export const getAllUsers = async () => {
   } else if (isElectron) {
     const stmt = sqliteDb.prepare('SELECT * FROM users');
     const users = stmt.all();
-    return users.map((user: any) => ({
-      ...user,
-      permissions: JSON.parse(user.permissions)
-    }));
+    return users.map((user: any) => {
+      let permissions = [];
+      try {
+        permissions = user.permissions ? JSON.parse(user.permissions) : [];
+      } catch (e) {
+        console.error(`Error parsing permissions for user ${user.username}:`, e);
+      }
+      return {
+        ...user,
+        permissions
+      };
+    });
   } else {
     const [rows] = await mysqlPool.execute('SELECT * FROM users');
-    return (rows as any[]).map((user: any) => ({
-      ...user,
-      permissions: JSON.parse(user.permissions)
-    }));
+    return (rows as any[]).map((user: any) => {
+      let permissions = [];
+      try {
+        permissions = user.permissions ? JSON.parse(user.permissions) : [];
+      } catch (e) {
+        console.error(`Error parsing permissions for user ${user.username}:`, e);
+      }
+      return {
+        ...user,
+        permissions
+      };
+    });
   }
 };
 
 export const getUserById = async (id: string) => {
+  await checkDbInitialized();
   if (usePostgres) {
     const { rows } = await pgPool!.query('SELECT * FROM users WHERE id = $1', [id]);
     const user = rows[0];
@@ -257,20 +349,31 @@ export const getUserById = async (id: string) => {
     const stmt = sqliteDb.prepare('SELECT * FROM users WHERE id = ?');
     const user = stmt.get(id);
     if (user) {
-      (user as any).permissions = JSON.parse((user as any).permissions);
+      try {
+        (user as any).permissions = (user as any).permissions ? JSON.parse((user as any).permissions) : [];
+      } catch (e) {
+        console.error(`Error parsing permissions for user ${id}:`, e);
+        (user as any).permissions = [];
+      }
     }
     return user;
   } else {
     const [rows] = await mysqlPool.execute('SELECT * FROM users WHERE id = ?', [id]);
     const user = (rows as any[])[0];
     if (user) {
-      (user as any).permissions = JSON.parse((user as any).permissions);
+      try {
+        (user as any).permissions = (user as any).permissions ? JSON.parse((user as any).permissions) : [];
+      } catch (e) {
+        console.error(`Error parsing permissions for user ${id}:`, e);
+        (user as any).permissions = [];
+      }
     }
     return user;
   }
 };
 
 export const getUserByUsername = async (username: string) => {
+  await checkDbInitialized();
   if (usePostgres) {
     const { rows } = await pgPool!.query('SELECT * FROM users WHERE username = $1', [username]);
     const user = rows[0];
@@ -282,20 +385,31 @@ export const getUserByUsername = async (username: string) => {
     const stmt = sqliteDb.prepare('SELECT * FROM users WHERE username = ?');
     const user = stmt.get(username);
     if (user) {
-      (user as any).permissions = JSON.parse((user as any).permissions);
+      try {
+        (user as any).permissions = (user as any).permissions ? JSON.parse((user as any).permissions) : [];
+      } catch (e) {
+        console.error(`Error parsing permissions for username ${username}:`, e);
+        (user as any).permissions = [];
+      }
     }
     return user;
   } else {
     const [rows] = await mysqlPool.execute('SELECT * FROM users WHERE username = ?', [username]);
     const user = (rows as any[])[0];
     if (user) {
-      (user as any).permissions = JSON.parse((user as any).permissions);
+      try {
+        (user as any).permissions = (user as any).permissions ? JSON.parse((user as any).permissions) : [];
+      } catch (e) {
+        console.error(`Error parsing permissions for username ${username}:`, e);
+        (user as any).permissions = [];
+      }
     }
     return user;
   }
 };
 
 export const createUser = async (user: any) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query(
       'INSERT INTO users (id, name, username, role, password, permissions) VALUES ($1, $2, $3, $4, $5, $6)',
@@ -315,6 +429,7 @@ export const createUser = async (user: any) => {
 };
 
 export const updateUser = async (id: string, user: any) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query(
       'UPDATE users SET name = $1, username = $2, role = $3, password = COALESCE($4, password), permissions = $5 WHERE id = $6',
@@ -334,6 +449,7 @@ export const updateUser = async (id: string, user: any) => {
 };
 
 export const deleteUser = async (id: string) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query('DELETE FROM users WHERE id = $1', [id]);
   } else if (isElectron) {
@@ -346,6 +462,7 @@ export const deleteUser = async (id: string) => {
 
 // Donation categories functions
 export const getAllDonationCategories = async () => {
+  await checkDbInitialized();
   if (usePostgres) {
     const { rows } = await pgPool!.query('SELECT * FROM donation_categories ORDER BY name');
     return rows;
@@ -359,6 +476,7 @@ export const getAllDonationCategories = async () => {
 };
 
 export const createDonationCategory = async (category: { id: string; name: string }) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query(
       'INSERT INTO donation_categories (id, name, created_at) VALUES ($1, $2, CURRENT_TIMESTAMP)',
@@ -378,6 +496,7 @@ export const createDonationCategory = async (category: { id: string; name: strin
 };
 
 export const updateDonationCategory = async (id: string, name: string) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query('UPDATE donation_categories SET name = $1 WHERE id = $2', [name, id]);
   } else if (isElectron) {
@@ -389,6 +508,7 @@ export const updateDonationCategory = async (id: string, name: string) => {
 };
 
 export const deleteDonationCategory = async (id: string) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query('DELETE FROM donation_categories WHERE id = $1', [id]);
   } else if (isElectron) {
@@ -401,6 +521,7 @@ export const deleteDonationCategory = async (id: string) => {
 
 // Expense categories functions
 export const getAllExpenseCategories = async () => {
+  await checkDbInitialized();
   if (usePostgres) {
     const { rows } = await pgPool!.query('SELECT * FROM expense_categories ORDER BY name');
     return rows;
@@ -414,6 +535,7 @@ export const getAllExpenseCategories = async () => {
 };
 
 export const createExpenseCategory = async (category: { id: string; name: string }) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query(
       'INSERT INTO expense_categories (id, name, created_at) VALUES ($1, $2, CURRENT_TIMESTAMP)',
@@ -433,6 +555,7 @@ export const createExpenseCategory = async (category: { id: string; name: string
 };
 
 export const updateExpenseCategory = async (id: string, name: string) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query('UPDATE expense_categories SET name = $1 WHERE id = $2', [name, id]);
   } else if (isElectron) {
@@ -444,6 +567,7 @@ export const updateExpenseCategory = async (id: string, name: string) => {
 };
 
 export const deleteExpenseCategory = async (id: string) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query('DELETE FROM expense_categories WHERE id = $1', [id]);
   } else if (isElectron) {
@@ -456,6 +580,7 @@ export const deleteExpenseCategory = async (id: string) => {
 
 // Service times functions
 export const getAllServiceTimes = async () => {
+  await checkDbInitialized();
   if (usePostgres) {
     const { rows } = await pgPool!.query('SELECT * FROM service_times ORDER BY time');
     return rows;
@@ -469,6 +594,7 @@ export const getAllServiceTimes = async () => {
 };
 
 export const createServiceTime = async (serviceTime: { id: string; time: string }) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query(
       'INSERT INTO service_times (id, time, created_at) VALUES ($1, $2, CURRENT_TIMESTAMP)',
@@ -488,6 +614,7 @@ export const createServiceTime = async (serviceTime: { id: string; time: string 
 };
 
 export const updateServiceTime = async (id: string, time: string) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query('UPDATE service_times SET time = $1 WHERE id = $2', [time, id]);
   } else if (isElectron) {
@@ -499,6 +626,7 @@ export const updateServiceTime = async (id: string, time: string) => {
 };
 
 export const deleteServiceTime = async (id: string) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query('DELETE FROM service_times WHERE id = $1', [id]);
   } else if (isElectron) {
@@ -511,6 +639,7 @@ export const deleteServiceTime = async (id: string) => {
 
 // Giving types functions
 export const getAllGivingTypes = async () => {
+  await checkDbInitialized();
   if (usePostgres) {
     const { rows } = await pgPool!.query('SELECT * FROM giving_types ORDER BY name');
     return rows;
@@ -524,6 +653,7 @@ export const getAllGivingTypes = async () => {
 };
 
 export const createGivingType = async (givingType: { id: string; name: string }) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query(
       'INSERT INTO giving_types (id, name, created_at) VALUES ($1, $2, CURRENT_TIMESTAMP)',
@@ -543,6 +673,7 @@ export const createGivingType = async (givingType: { id: string; name: string })
 };
 
 export const updateGivingType = async (id: string, name: string) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query('UPDATE giving_types SET name = $1 WHERE id = $2', [name, id]);
   } else if (isElectron) {
@@ -554,6 +685,7 @@ export const updateGivingType = async (id: string, name: string) => {
 };
 
 export const deleteGivingType = async (id: string) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query('DELETE FROM giving_types WHERE id = $1', [id]);
   } else if (isElectron) {
@@ -566,6 +698,7 @@ export const deleteGivingType = async (id: string) => {
 
 // Networks functions
 export const getAllNetworks = async () => {
+  await checkDbInitialized();
   if (usePostgres) {
     const { rows } = await pgPool!.query('SELECT * FROM networks ORDER BY name');
     return rows;
@@ -579,6 +712,7 @@ export const getAllNetworks = async () => {
 };
 
 export const createNetwork = async (network: { id: string; name: string }) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query(
       'INSERT INTO networks (id, name, created_at) VALUES ($1, $2, CURRENT_TIMESTAMP)',
@@ -598,6 +732,7 @@ export const createNetwork = async (network: { id: string; name: string }) => {
 };
 
 export const updateNetwork = async (id: string, name: string) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query('UPDATE networks SET name = $1 WHERE id = $2', [name, id]);
   } else if (isElectron) {
@@ -609,6 +744,7 @@ export const updateNetwork = async (id: string, name: string) => {
 };
 
 export const deleteNetwork = async (id: string) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query('DELETE FROM networks WHERE id = $1', [id]);
   } else if (isElectron) {
@@ -622,6 +758,7 @@ export const deleteNetwork = async (id: string) => {
 
 // Members functions
 export const createMember = async (member: any) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query(
       'INSERT INTO members (id, name, email, phone, join_date, avatar_url, address, network) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)',
@@ -641,6 +778,7 @@ export const createMember = async (member: any) => {
 };
 
 export const updateMember = async (id: string, member: any) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query(
       'UPDATE members SET name = $1, email = $2, phone = $3, join_date = $4, avatar_url = $5, address = $6, network = $7 WHERE id = $8',
@@ -660,6 +798,7 @@ export const updateMember = async (id: string, member: any) => {
 };
 
 export const deleteMember = async (id: string) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query('DELETE FROM members WHERE id = $1', [id]);
   } else if (isElectron) {
@@ -672,6 +811,7 @@ export const deleteMember = async (id: string) => {
 
 // Events functions
 export const createEvent = async (event: any) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query(
       'INSERT INTO events (id, title, date, description, resource) VALUES ($1, $2, $3, $4, $5)',
@@ -691,6 +831,7 @@ export const createEvent = async (event: any) => {
 };
 
 export const updateEvent = async (id: string, event: any) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query(
       'UPDATE events SET title = $1, date = $2, description = $3, resource = $4 WHERE id = $5',
@@ -710,6 +851,7 @@ export const updateEvent = async (id: string, event: any) => {
 };
 
 export const deleteEvent = async (id: string) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query('DELETE FROM events WHERE id = $1', [id]);
   } else if (isElectron) {
@@ -722,6 +864,7 @@ export const deleteEvent = async (id: string) => {
 
 // Donations functions
 export const createDonation = async (donation: any) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query(
       'INSERT INTO donations (id, donor_name, member_id, amount, date, category, giving_type_id, service_time, recorded_by_id, reference) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)',
@@ -741,6 +884,7 @@ export const createDonation = async (donation: any) => {
 };
 
 export const updateDonation = async (id: string, donation: any) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query(
       'UPDATE donations SET donor_name = $1, member_id = $2, amount = $3, date = $4, category = $5, giving_type_id = $6, service_time = $7, recorded_by_id = $8, reference = $9 WHERE id = $10',
@@ -760,6 +904,7 @@ export const updateDonation = async (id: string, donation: any) => {
 };
 
 export const deleteDonation = async (id: string) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query('DELETE FROM donations WHERE id = $1', [id]);
   } else if (isElectron) {
@@ -772,6 +917,7 @@ export const deleteDonation = async (id: string) => {
 
 // Expenses functions
 export const createExpense = async (expense: any) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query(
       'INSERT INTO expenses (id, description, amount, date, category, recorded_by_id) VALUES ($1, $2, $3, $4, $5, $6)',
@@ -791,6 +937,7 @@ export const createExpense = async (expense: any) => {
 };
 
 export const updateExpense = async (id: string, expense: any) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query(
       'UPDATE expenses SET description = $1, amount = $2, date = $3, category = $4, recorded_by_id = $5 WHERE id = $6',
@@ -810,6 +957,7 @@ export const updateExpense = async (id: string, expense: any) => {
 };
 
 export const deleteExpense = async (id: string) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query('DELETE FROM expenses WHERE id = $1', [id]);
   } else if (isElectron) {
@@ -822,6 +970,7 @@ export const deleteExpense = async (id: string) => {
 
 // Helper functions for reports and queries
 export const getDonationsWithFilters = async (startDate?: string, endDate?: string) => {
+  await checkDbInitialized();
   let query = 'SELECT * FROM donations WHERE 1=1';
   const params: any[] = [];
 
@@ -852,6 +1001,7 @@ export const getDonationsWithFilters = async (startDate?: string, endDate?: stri
 };
 
 export const getExpensesWithFilters = async (startDate?: string, endDate?: string) => {
+  await checkDbInitialized();
   let query = 'SELECT * FROM expenses WHERE 1=1';
   const params: any[] = [];
 
@@ -882,6 +1032,7 @@ export const getExpensesWithFilters = async (startDate?: string, endDate?: strin
 };
 
 export const getDistinctServiceTimes = async () => {
+  await checkDbInitialized();
   if (usePostgres) {
     const { rows } = await pgPool!.query('SELECT DISTINCT service_time FROM donations WHERE service_time IS NOT NULL');
     return rows.map((row: any) => row.service_time);
@@ -896,6 +1047,7 @@ export const getDistinctServiceTimes = async () => {
 
 // Settings functions
 export const getSettings = async () => {
+  await checkDbInitialized();
   if (usePostgres) {
     const { rows } = await pgPool!.query('SELECT * FROM settings WHERE id = $1', ['global']);
     const setting = rows[0];
@@ -951,6 +1103,7 @@ export const updateSettings = async (settings: {
   backupTime?: string;
   backupEnabled?: boolean;
 }) => {
+  await checkDbInitialized();
   const backupTime = settings.backupTime || '02:00';
   const backupEnabled = settings.backupEnabled !== undefined ? (settings.backupEnabled ? 1 : 0) : 1;
 
@@ -974,6 +1127,7 @@ export const updateSettings = async (settings: {
 
 // Helper function for system reset
 export const resetSystemData = async () => {
+  await checkDbInitialized();
   if (usePostgres) {
     const client = await pgPool!.connect();
     try {
@@ -1023,6 +1177,7 @@ export const resetSystemData = async () => {
 
 // Resources functions
 export const getAllResources = async () => {
+  await checkDbInitialized();
   if (usePostgres) {
     const { rows } = await pgPool!.query('SELECT * FROM resources ORDER BY name');
     return rows;
@@ -1036,6 +1191,7 @@ export const getAllResources = async () => {
 };
 
 export const createResource = async (resource: { id: string; name: string }) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query(
       'INSERT INTO resources (id, name) VALUES ($1, $2)',
@@ -1055,6 +1211,7 @@ export const createResource = async (resource: { id: string; name: string }) => 
 };
 
 export const deleteResource = async (id: string) => {
+  await checkDbInitialized();
   if (usePostgres) {
     await pgPool!.query('DELETE FROM resources WHERE id = $1', [id]);
   } else if (isElectron) {

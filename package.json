@@ -1,6 +1,6 @@
 {
     "name": "nextn",
-    "version": "0.1.0",
+    "version": "0.1.2",
     "private": true,
     "main": "electron/main.js",
     "homepage": "./",
@@ -13,6 +13,7 @@
         "lint": "next lint",
         "typecheck": "tsc --noEmit",
         "populate-db": "tsx scripts/populate-db.js",
+        "migrate-to-sqlite": "tsx scripts/migrate-mysql-to-sqlite.ts",
         "backup": "node scripts/backup-db.js",
         "backup-service": "node scripts/auto-backup.js",
         "sync-db": "node scripts/sync-mysql-to-sqlite.js",
@@ -22,7 +23,7 @@
         "electron-dev": "concurrently \"cross-env ELECTRON=true npm run dev-electron\" \"wait-on http://localhost:9003 && cross-env NODE_ENV=development electron .\"",
         "dev-electron": "next dev -p 9003",
         "build-electron": "ELECTRON=true npm run build && electron-builder",
-        "build-electron-win": "cross-env ELECTRON=true npm run build && cross-env ELECTRON=true electron-builder --win",
+        "build-electron-win": "cross-env ELECTRON=true FORCE_MYSQL=true FORCE_SQLITE=false npm run build && cross-env ELECTRON=true electron-builder --win",
         "build-electron-mac": "ELECTRON=true npm run build && electron-builder --mac",
         "build-electron-linux": "ELECTRON=true npm run build && electron-builder --linux",
         "build-inno": "npm run build-electron-win && (if exist \"C:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe\" (\"C:\\Program Files (x86)\\Inno Setup 6\\ISCC.exe\" installer.iss) else if exist \"C:\\Program Files\\Inno Setup 6\\ISCC.exe\" (\"C:\\Program Files\\Inno Setup 6\\ISCC.exe\" installer.iss) else (echo Inno Setup not found. Please install from https://jrsoftware.org/isinfo.php && exit /b 1))",
@@ -55,7 +56,7 @@
         "@radix-ui/react-toast": "^1.2.6",
         "@radix-ui/react-tooltip": "^1.1.8",
         "@types/pg": "^8.15.6",
-        "bcrypt": "^6.0.0",
+        "bcryptjs": "^3.0.3",
         "better-sqlite3": "^12.4.1",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
@@ -84,6 +85,7 @@
     },
     "devDependencies": {
         "@types/bcrypt": "^6.0.0",
+        "@types/bcryptjs": "^2.4.6",
         "@types/better-sqlite3": "^7.6.13",
         "@types/jspdf": "^2.0.0",
         "@types/node": "^20",
@@ -105,20 +107,28 @@
         "appId": "com.clcfinance.app",
         "productName": "CLC Finance",
         "directories": {
-            "output": "dist-electron-new"
+            "output": "dist-electron-final"
         },
+        "asar": false,
         "files": [
             "electron/**/*",
             ".next/**/*",
+            ".env.local",
             "node_modules/**/*",
             "package.json",
-            "public/**/*"
+            "public/**/*",
+            "data/**/*"
+        ],
+        "asarUnpack": [
+            "node_modules/better-sqlite3/**/*",
+            "node_modules/bcrypt/**/*"
         ],
         "mac": {
             "category": "public.app-category.business"
         },
         "win": {
             "target": "nsis",
+            "icon": "public/CLC logo2.png",
             "forceCodeSigning": false,
             "verifyUpdateCodeSignature": false
         },
@@ -128,6 +138,7 @@
         "nsis": {
             "oneClick": false,
             "allowToChangeInstallationDirectory": true
-        }
+        },
+        "npmRebuild": false
     }
 }

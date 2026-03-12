@@ -52,7 +52,7 @@ const insertEvents = async () => {
 };
 
 const insertUsers = async () => {
-  const bcrypt = await import('bcrypt');
+  const bcrypt = await import('bcryptjs');
 
   for (const user of users) {
     try {
@@ -68,6 +68,8 @@ const insertUsers = async () => {
       if (hashedPassword && !hashedPassword.startsWith('$2')) {
         hashedPassword = await bcrypt.hash(user.password, 10);
       }
+
+      console.log(`Creating user ${user.username} with password: ${user.password} (hashed: ${hashedPassword})`);
 
       await createUser({
         id: user.id,

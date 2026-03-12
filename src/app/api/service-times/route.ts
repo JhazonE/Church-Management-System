@@ -1,19 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
-import {
-  getAllServiceTimes,
-  createServiceTime,
-  updateServiceTime,
-  deleteServiceTime
-} from '@/lib/database';
+import { ServiceController } from '@/controllers/ServiceController';
 
 export async function GET() {
   try {
-    const times = await getAllServiceTimes();
+    const times = await ServiceController.getAll();
     return NextResponse.json(times);
-  } catch (error) {
-    console.error('Error fetching service times:', error);
+  } catch (error: any) {
     return NextResponse.json(
-      { error: 'Failed to fetch service times' },
+      { error: error.message || 'Failed to fetch service times' },
       { status: 500 }
     );
   }
@@ -21,51 +15,28 @@ export async function GET() {
 
 export async function POST(request: NextRequest) {
   try {
-    const serviceTime = await request.json();
-
-    if (!serviceTime.time || !serviceTime.time.trim()) {
-      return NextResponse.json(
-        { error: 'Service time is required' },
-        { status: 400 }
-      );
-    }
-
-    const newServiceTime = {
-      id: `st${Date.now()}`,
-      time: serviceTime.time.trim()
-    };
-
-    await createServiceTime(newServiceTime);
-
-    return NextResponse.json({ success: true, serviceTime: newServiceTime });
-  } catch (error) {
-    console.error('Error creating service time:', error);
+    const body = await request.json();
+    const serviceTime = await ServiceController.create(body.time);
+    return NextResponse.json({ success: true, serviceTime });
+  } catch (error: any) {
+    const status = error.message === 'Service time is required' ? 400 : 500;
     return NextResponse.json(
-      { error: 'Failed to create service time' },
-      { status: 500 }
+      { error: error.message || 'Failed to create service time' },
+      { status }
     );
   }
 }
 
 export async function PUT(request: NextRequest) {
   try {
-    const serviceTime = await request.json();
-
-    if (!serviceTime.id || !serviceTime.time || !serviceTime.time.trim()) {
-      return NextResponse.json(
-        { error: 'Service time ID and time are required' },
-        { status: 400 }
-      );
-    }
-
-    await updateServiceTime(serviceTime.id, serviceTime.time.trim());
-
+    const body = await request.json();
+    const serviceTime = await ServiceController.update(body.id, body.time);
     return NextResponse.json({ success: true, serviceTime });
-  } catch (error) {
-    console.error('Error updating service time:', error);
+  } catch (error: any) {
+    const status = error.message === 'Service time ID and time are required' ? 400 : 500;
     return NextResponse.json(
-      { error: 'Failed to update service time' },
-      { status: 500 }
+      { error: error.message || 'Failed to update service time' },
+      { status }
     );
   }
 }
@@ -74,22 +45,20 @@ export async function DELETE(request: NextRequest) {
   try {
     const url = new URL(request.url);
     const id = url.searchParams.get('id');
-
-    if (!id) {
-      return NextResponse.json(
-        { error: 'Service time ID is required' },
-        { status: 400 }
-      );
-    }
-
-    await deleteServiceTime(id);
-
+    
+    // We can cast id to string because the controller checks for falsy values
+    // but to be safe for the signature we can pass it as string | undefined/null and let controller handle or handle here
+    // The controller expects string, so let's check validation here or let controller throw?
+    // Controller throws "Service time ID is required" if !id.
+    
+    await ServiceController.delete(id as string);
     return NextResponse.json({ success: true });
-  } catch (error) {
-    console.error('Error deleting service time:', error);
+  } catch (error: any) {
+     const status = error.message === 'Service time ID is required' ? 400 : 500;
     return NextResponse.json(
-      { error: 'Failed to delete service time' },
-      { status: 500 }
+      { error: error.message || 'Failed to delete service time' },
+      { status }
     );
   }
 }
+
