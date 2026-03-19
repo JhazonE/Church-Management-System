@@ -187,6 +187,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
               </div>
             </header>
             <div className="flex-1 overflow-auto p-4 sm:p-6 animate-fade-in">{children}</div>
+            <footer className="py-4 text-center text-sm text-muted-foreground border-t">
+              Developed by BHAGOH
+            </footer>
           </main>
         </div>
       </SidebarProvider>

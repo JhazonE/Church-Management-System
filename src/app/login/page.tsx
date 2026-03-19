@@ -70,26 +70,26 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background">
+    <div className="relative flex min-h-screen items-center justify-center bg-background p-4">
       <Card className="w-full max-w-sm">
         <CardHeader className="text-center">
-            <div className="flex justify-center items-center mb-4">
-                {settings.logoUrl ? (
-                  <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-primary overflow-hidden">
-                    <Image
-                      src={settings.logoUrl}
-                      alt="Logo"
-                      width={48}
-                      height={48}
-                      className="object-cover rounded-full"
-                    />
-                  </div>
-                ) : (
-                  <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-primary">
-                    <Church className="h-7 w-7" />
-                  </div>
-                )}
-            </div>
+          <div className="flex justify-center items-center mb-4">
+            {settings.logoUrl ? (
+              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-primary overflow-hidden">
+                <Image
+                  src={settings.logoUrl}
+                  alt="Logo"
+                  width={48}
+                  height={48}
+                  className="object-cover rounded-full"
+                />
+              </div>
+            ) : (
+              <div className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-primary">
+                <Church className="h-7 w-7" />
+              </div>
+            )}
+          </div>
           <CardTitle>{settings.appName}</CardTitle>
           <CardDescription>Enter your credentials to access the dashboard.</CardDescription>
         </CardHeader>
@@ -135,6 +135,9 @@ export default function LoginPage() {
           </CardFooter>
         </form>
       </Card>
+      <footer className="absolute bottom-4 w-full text-center text-sm text-muted-foreground p-4">
+        Developed by BHAGOH
+      </footer>
     </div>
   );
 }
